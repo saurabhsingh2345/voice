@@ -112,6 +112,14 @@
 
     <div class="row" style="margin-top:1rem">
       <button class="primary" id="speak" disabled>Speak it</button>
+      <label for="fmt" style="margin:0">Download as</label>
+      <select id="fmt" style="width:auto">
+        <option value="webm">WebM / Opus (smallest)</option>
+        <option value="opus">Ogg / Opus</option>
+        <option value="wav">WAV (uncompressed)</option>
+        <option value="flac">FLAC (lossless)</option>
+      </select>
+      <button id="download" disabled>Download</button>
       <span class="muted" id="speakHint">Enrol a voice first.</span>
     </div>
     <div class="status" id="speakStatus"></div>
@@ -315,6 +323,80 @@ $("wipe").onclick = async () => {
   refreshVoices();
 };
 
+// --- download ------------------------------------------------------------
+let lastWav = null;   // the WAV we played, kept for re-encoding
+let lastText = "";
+
+// A real .webm needs a Matroska muxer, which libsndfile does not have, so the
+// server cannot produce one. The browser can: play the buffer into a
+// MediaStreamDestination and let MediaRecorder mux it. That runs in real time,
+// hence the progress note. Every other format is encoded server-side instantly.
+async function wavToWebm(wavBlob) {
+  const ctx = new AudioContext();
+  const buf = await ctx.decodeAudioData(await wavBlob.arrayBuffer());
+  const dest = ctx.createMediaStreamDestination();
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  src.connect(dest);
+
+  const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+    ? "audio/webm;codecs=opus"
+    : "audio/webm";
+  const rec = new MediaRecorder(dest.stream, { mimeType: mime });
+  const parts = [];
+  rec.ondataavailable = e => parts.push(e.data);
+
+  const done = new Promise(res => { rec.onstop = res; });
+  rec.start();
+  src.start();
+  await new Promise(res => { src.onended = res; });
+  rec.stop();
+  await done;
+  await ctx.close();
+  return new Blob(parts, { type: "audio/webm" });
+}
+
+function saveBlob(blob, ext) {
+  const name = (lastText.trim().slice(0, 40).replace(/[^\w\s-]/g, "").trim()
+    .replace(/\s+/g, "-").toLowerCase() || "speech") + "." + ext;
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  return name;
+}
+
+$("download").onclick = async () => {
+  const fmt = $("fmt").value;
+  $("download").disabled = true;
+  try {
+    if (fmt === "webm") {
+      if (!lastWav) throw new Error("nothing synthesized yet");
+      setStatus($("speakStatus"), "Encoding WebM (runs in real time)…");
+      const blob = await wavToWebm(lastWav);
+      const name = saveBlob(blob, "webm");
+      setStatus($("speakStatus"), `Saved ${name} (${(blob.size / 1024).toFixed(0)} KB).`, "ok");
+    } else {
+      // Re-synthesizing would give different audio, so ask the server to
+      // re-encode... it has no cache, so we send the same text again.
+      setStatus($("speakStatus"), `Encoding ${fmt.toUpperCase()}…`);
+      const fd = new FormData();
+      fd.append("text", lastText || $("text").value);
+      fd.append("profile_id", $("voiceSel").value);
+      fd.append("format", fmt);
+      const res = await fetch("/api/speak", { method: "POST", body: fd });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || "failed");
+      const blob = await res.blob();
+      const name = saveBlob(blob, res.headers.get("X-Audio-Format") || fmt);
+      setStatus($("speakStatus"), `Saved ${name} (${(blob.size / 1024).toFixed(0)} KB).`, "ok");
+    }
+  } catch (e) {
+    setStatus($("speakStatus"), "Download failed: " + e.message, "err");
+  }
+  $("download").disabled = false;
+};
+
 // --- synthesis -----------------------------------------------------------
 $("speak").onclick = async () => {
   const fd = new FormData();
@@ -332,14 +414,18 @@ $("speak").onclick = async () => {
   }
   const blob = await res.blob();
   const wall = ((performance.now() - t0) / 1000).toFixed(1);
+  lastWav = blob;
+  lastText = $("text").value;
   $("out").src = URL.createObjectURL(blob);
   $("out").hidden = false;
   $("out").play();
   setStatus($("speakStatus"), "Done.", "ok");
   $("metrics").textContent =
     `${res.headers.get("X-Audio-Seconds")}s of audio · synthesis ${res.headers.get("X-Synthesis-Ms")}ms · ` +
-    `realtime factor ${res.headers.get("X-Realtime-Factor")} · round trip ${wall}s`;
+    `realtime factor ${res.headers.get("X-Realtime-Factor")} · round trip ${wall}s · ` +
+    `${(blob.size / 1024).toFixed(0)} KB wav`;
   $("speak").disabled = false;
+  $("download").disabled = false;
 };
 
 loadConfig().then(refreshVoices);

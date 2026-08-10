@@ -80,6 +80,40 @@ def _to_wav_bytes(audio: np.ndarray, sample_rate: int) -> bytes:
     return buffer.getvalue()
 
 
+#: Output containers we can produce without shelling out to ffmpeg.
+#: WebM is deliberately absent: it needs a Matroska muxer, and libsndfile has
+#: none. Ogg/Opus carries the identical Opus codec, so the browser encodes a
+#: real .webm client-side when that exact container is wanted.
+OUTPUT_FORMATS: dict[str, tuple[str, str, str, str]] = {
+    # key: (libsndfile format, subtype, media type, extension)
+    "wav": ("WAV", "PCM_16", "audio/wav", "wav"),
+    "opus": ("OGG", "OPUS", "audio/ogg", "opus"),
+    "flac": ("FLAC", "PCM_16", "audio/flac", "flac"),
+}
+
+
+def _encode(audio: np.ndarray, sample_rate: int, fmt: str) -> tuple[bytes, str, str]:
+    """Encode to the requested container. Returns (bytes, media_type, extension)."""
+    try:
+        sndfile_fmt, subtype, media_type, ext = OUTPUT_FORMATS[fmt]
+    except KeyError:
+        raise HTTPException(
+            400, f"unsupported format {fmt!r}; choose one of {sorted(OUTPUT_FORMATS)}"
+        ) from None
+
+    buffer = io.BytesIO()
+    if sndfile_fmt == "OGG" and subtype == "OPUS":
+        # Opus is defined only at 48 kHz; libsndfile resamples for us, but it
+        # refuses rates it cannot handle, so be explicit about the failure.
+        try:
+            sf.write(buffer, audio, sample_rate, format="OGG", subtype="OPUS")
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(500, f"Opus encoding failed: {exc}") from exc
+    else:
+        sf.write(buffer, audio, sample_rate, format=sndfile_fmt, subtype=subtype)
+    return buffer.getvalue(), media_type, ext
+
+
 # --- pages ----------------------------------------------------------------
 
 
@@ -95,6 +129,7 @@ async def config() -> dict:
         "min_seconds": MIN_REFERENCE_SECONDS,
         "max_seconds": MAX_REFERENCE_SECONDS,
         "model_loaded": _loaded,
+        "formats": sorted(OUTPUT_FORMATS),
     }
 
 
@@ -166,9 +201,21 @@ async def delete_all() -> dict:
 
 
 @app.post("/api/speak")
-async def speak(text: str = Form(...), profile_id: str = Form(...)) -> Response:
+async def speak(
+    text: str = Form(...),
+    profile_id: str = Form(...),
+    format: str = Form("wav"),
+) -> Response:
     if not text.strip():
         raise HTTPException(400, "text is required")
+
+    # Validate before synthesizing: encoding is the last step, and rejecting an
+    # unknown format after a 30s generation wastes all of it.
+    fmt = format.lower()
+    if fmt not in OUTPUT_FORMATS:
+        raise HTTPException(
+            400, f"unsupported format {fmt!r}; choose one of {sorted(OUTPUT_FORMATS)}"
+        )
 
     await _ensure_loaded()
 
@@ -187,13 +234,18 @@ async def speak(text: str = Form(...), profile_id: str = Form(...)) -> Response:
     elapsed_ms = (time.perf_counter() - started) * 1000
     seconds = len(audio) / SAMPLE_RATE
 
+    payload, media_type, ext = _encode(audio, SAMPLE_RATE, fmt)
+
     return Response(
-        content=_to_wav_bytes(audio, SAMPLE_RATE),
-        media_type="audio/wav",
+        content=payload,
+        media_type=media_type,
         headers={
             "X-Synthesis-Ms": f"{elapsed_ms:.0f}",
             "X-Audio-Seconds": f"{seconds:.2f}",
             "X-Realtime-Factor": f"{(elapsed_ms / 1000) / seconds:.2f}" if seconds else "0",
+            "X-Audio-Format": ext,
+            "X-Audio-Bytes": str(len(payload)),
+            "Content-Disposition": f'inline; filename="speech.{ext}"',
         },
     )
 
