@@ -71,6 +71,8 @@ class LoopConfig:
     barge_in_grace_ms: float = 350.0
     allow_barge_in: bool = True
     max_tokens: int = 220
+    auto_approve_tools: bool = False
+    """Skip the confirmation prompt. For scripted runs only -- never a default."""
 
 
 class VoiceLoop:
@@ -87,14 +89,18 @@ class VoiceLoop:
         self._turn_task: asyncio.Task | None = None
         self._playback_started_at = 0.0
         self._interrupt = threading.Event()
+        self.sandbox = None
 
     # --- setup ------------------------------------------------------------
 
     def load(self) -> None:
         from voiceagent.llm.mlx_engine import MLXLLMEngine
         from voiceagent.stt.moonshine_engine import MoonshineEngine
+        from voiceagent.tools.files import ListFilesTool, ReadFileTool, Sandbox, WriteFileTool
+        from voiceagent.tools.http import HttpRequestTool
+        from voiceagent.tools.registry import ToolRegistry
+        from voiceagent.tools.shell import ShellTool
         from voiceagent.tts.kokoro_engine import KokoroEngine
-        from voiceagent.tools.dummy import DummyWeatherTool
 
         started = time.perf_counter()
         console.print("[dim]loading VAD...[/]")
@@ -107,7 +113,22 @@ class VoiceLoop:
         console.print("[dim]loading LLM (qwen3-4b)...[/]")
         llm = MLXLLMEngine()
         llm.load()
-        self.agent = Agent(llm, tools=[DummyWeatherTool()])
+
+        sandbox = Sandbox()
+        sandbox.ensure_root()
+        registry = ToolRegistry(
+            [
+                ListFilesTool(sandbox),
+                ReadFileTool(sandbox),
+                WriteFileTool(sandbox),
+                ShellTool(sandbox=sandbox),
+                HttpRequestTool(),
+            ]
+        )
+        self.agent = Agent(llm, registry=registry, confirm=self._confirm)
+        self.sandbox = sandbox
+        console.print(f"[dim]  workspace: {sandbox.root}[/]")
+        console.print(f"[dim]  tools: {', '.join(registry.names)}[/]")
 
         console.print("[dim]loading TTS (kokoro)...[/]")
         self.tts = KokoroEngine()
@@ -204,6 +225,27 @@ class VoiceLoop:
             self._interrupt.clear()
             self._turn_task = asyncio.create_task(self._run_turn(utterance, timings))
 
+    async def _confirm(self, tool, arguments: dict) -> bool:
+        """Ask before running anything that writes, executes, or leaves the machine.
+
+        Typed rather than spoken on purpose: "yes" is exactly the kind of word a
+        speech recogniser mishears, and this is the gate protecting the
+        filesystem and the network.
+        """
+        if self.config.auto_approve_tools:
+            console.print(f"[yellow]  auto-approved {tool.name}({arguments})[/]")
+            return True
+
+        console.print(
+            f"\n[bold yellow]  Approve {tool.name}?[/] [dim]{arguments}[/]\n"
+            f"  [dim]type 'y' then Enter to allow:[/] ",
+            end="",
+        )
+        answer = await asyncio.to_thread(input)
+        approved = answer.strip().lower() in ("y", "yes")
+        console.print("[green]  approved[/]" if approved else "[red]  declined[/]")
+        return approved
+
     def _within_grace(self) -> bool:
         elapsed = (time.perf_counter() - self._playback_started_at) * 1000
         return elapsed < self.config.barge_in_grace_ms
@@ -281,9 +323,19 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Full local voice loop.")
     parser.add_argument("--replay", help="drive from a 16 kHz WAV instead of the mic")
     parser.add_argument("--no-barge-in", action="store_true", help="disable interruption")
+    parser.add_argument(
+        "--auto-approve-tools",
+        action="store_true",
+        help="run write/shell/network tools without asking (scripted runs only)",
+    )
     args = parser.parse_args()
 
-    loop = VoiceLoop(LoopConfig(allow_barge_in=not args.no_barge_in))
+    loop = VoiceLoop(
+        LoopConfig(
+            allow_barge_in=not args.no_barge_in,
+            auto_approve_tools=args.auto_approve_tools,
+        )
+    )
     loop.load()
     try:
         asyncio.run(loop.run(replay=args.replay))

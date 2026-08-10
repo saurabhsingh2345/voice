@@ -47,34 +47,51 @@ class AgentEvent:
     time_to_first_token_ms: float | None = None
 
 
+#: Called with (tool, arguments); returns True to allow the call. Tools that
+#: declare requires_confirmation are never run without one of these returning
+#: True -- the default refuses, so forgetting to wire it up fails closed.
+ConfirmHook = "Callable[[Tool, dict[str, Any]], Awaitable[bool]]"
+
+
+async def _deny_by_default(tool: Tool, arguments: dict[str, Any]) -> bool:
+    return False
+
+
 class Agent:
     def __init__(
         self,
         engine: LLMEngine,
         tools: list[Tool] | None = None,
         system_prompt: str = SYSTEM_PROMPT,
+        registry: "ToolRegistry | None" = None,
+        confirm=None,
     ) -> None:
+        from voiceagent.tools.registry import ToolRegistry
+
         self.engine = engine
-        self.tools = {tool.name: tool for tool in (tools or [])}
+        self.registry = registry or ToolRegistry(tools or [])
+        self.confirm = confirm or _deny_by_default
         self.history: list[Message] = [Message(role="system", content=system_prompt)]
 
     @property
+    def tools(self) -> dict[str, Tool]:
+        return {tool.name: tool for tool in self.registry}
+
+    @property
     def tool_specs(self) -> list[dict[str, Any]] | None:
-        if not self.tools:
-            return None
-        return [tool.to_openai_spec() for tool in self.tools.values()]
+        return self.registry.specs()
 
     async def _invoke(self, call: ToolCall) -> ToolResult:
-        tool = self.tools.get(call.name)
-        if tool is None:
-            return ToolResult(content="", ok=False, error=f"unknown tool {call.name!r}")
-        try:
-            return await tool.run(**call.arguments)
-        except TypeError as exc:
-            # Wrong/missing arguments -- report back so the model can retry.
-            return ToolResult(content="", ok=False, error=f"bad arguments: {exc}")
-        except Exception as exc:  # noqa: BLE001
-            return ToolResult(content="", ok=False, error=str(exc))
+        tool = self.registry.get(call.name)
+        if tool is not None and tool.requires_confirmation:
+            approved = await self.confirm(tool, call.arguments)
+            if not approved:
+                # Reported as a tool result, not an exception, so the model can
+                # tell the user it was declined instead of the turn dying.
+                return ToolResult(
+                    content="", ok=False, error="the user declined this action"
+                )
+        return await self.registry.invoke(call.name, call.arguments)
 
     async def prime(self) -> None:
         """Pre-compute the KV cache for the system prompt and tool schemas.

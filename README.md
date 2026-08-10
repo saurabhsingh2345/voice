@@ -172,6 +172,53 @@ agent and can interrupt it. Mitigated with a stricter VAD threshold during
 playback (0.85 vs 0.5) plus a 350 ms grace window, but headphones remove the
 problem properly. AEC is the real fix and is not built.
 
+## Phase 5 — tools
+
+The agent can act, not just talk. Verified end to end against the real model:
+
+```
+you>   What files are in my workspace?
+         -> list_files({})   <- database.yml (52 bytes)
+you>   Read database.yml and tell me the pool size.
+         -> read_file({'path': 'database.yml'})
+agent> The pool size in database.yml is 5.
+you>   Write summary.txt containing: pool size is five.
+         -> write_file(...)  [confirmation required]
+```
+
+| Tool | Confirmation | Notes |
+| --- | --- | --- |
+| `list_files`, `read_file` | no | read-only, sandboxed |
+| `write_file` | **yes** | sandboxed, 256 KB cap |
+| `run_command` | **yes** | allow-list only, no shell |
+| `http_request` | **yes** | the only tool that leaves the machine |
+
+Workspace defaults to `~/VoiceAgentWorkspace`.
+
+### How the sandbox actually holds
+
+Enforced on the **resolved** path, not the string, which defeats three separate
+escapes that a naive check misses:
+
+- `../` traversal — resolved before comparison.
+- **symlinks** pointing outside the workspace — resolution follows them.
+- **prefix collision** — `/x/workspace-evil` passes `startswith('/x/workspace')`
+  but fails `is_relative_to`.
+
+The shell tool parses with `shlex` and matches the *executable* against a fixed
+allow-list, then runs via `create_subprocess_exec` — never a shell. So `;`,
+`&&`, `|`, backticks and `$(…)` are inert bytes. `find` is allow-listed but
+`-exec`/`-delete` are refused explicitly, since those would be arbitrary
+execution through an allow-listed binary.
+
+`http_request` refuses loopback and private addresses, so the agent cannot be
+talked into probing your LAN or calling this project's own API on 127.0.0.1.
+
+**The confirmation gate fails closed**: `Agent`'s default confirm hook returns
+`False`, so a tool marked `requires_confirmation` cannot run if someone forgets
+to wire up a prompt. Tested. Approval is typed, not spoken — "yes" is exactly
+the word a speech recogniser mishears, and this gate protects the filesystem.
+
 ## Voice cloning + web UI
 
 ```bash
@@ -248,6 +295,7 @@ is for composed playback.
 - [x] **Phase 2** — LLM brain standalone (Qwen3-4B 4-bit, tool calling, prefix cache)
 - [x] **Phase 3** — TTS standalone (Kokoro-82M, sentence-streamed)
 - [x] **Phase 4** — full voice loop with VAD + barge-in (not Pipecat, see below)
+- [x] **Phase 5** — tool layer: files, shell, HTTP, with a confirmation gate
 - [x] **Phase 7** — voice cloning, consent-gated (Chatterbox Turbo) *(brought forward)*
 - [x] **Web UI** — enrol a voice, type text, hear it *(Tauri shell still pending)*
 - [ ] Phase 4 — full voice loop (Pipecat)
