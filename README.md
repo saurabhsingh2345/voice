@@ -122,6 +122,61 @@ since copyleft arrives through the dependency tree. One accepted exception is
 recorded: `num2words` (LGPL-2.1), used unmodified by misaki — **needs a decision
 before Phase 8 packaging.**
 
+## Voice cloning + web UI
+
+```bash
+uv sync --extra tts --extra clone
+uv run voice-web          # then open http://127.0.0.1:8823
+```
+
+Record ~10 s of speech in the browser (or upload a clip), type the consent
+phrase, and you can type any text and hear it back in that voice. Everything runs
+on this machine; nothing is uploaded.
+
+**Model:** Chatterbox Turbo, 350M params, **MIT** (Resemble AI), zero-shot from a
+single reference clip, 24 kHz. Fish Speech — the brief's other suggestion — was
+rejected: its weights are CC-BY-NC-SA-4.0, i.e. non-commercial.
+
+### Consent is structural, not a checkbox
+
+- `VoiceProfileStore.save()` takes a `ConsentRecord` as a required argument.
+  There is no code path that stores a voice without one.
+- The record requires typing `I consent to cloning my voice` exactly — a
+  checkbox is too easy to click past for biometric data.
+- The reference clip is encrypted at rest (Fernet) with a key in the **macOS
+  Keychain**, never beside the data.
+- "Delete all my data" removes the clips, the metadata, and **destroys the key**,
+  so any stray ciphertext is unrecoverable rather than merely unreferenced.
+
+15 tests in `tests/test_consent.py` assert these properties, including that a
+consent-shaped duck-typed object is rejected.
+
+### Performance
+
+Measured on M3 Pro. Model load ~30 s (once per server start); after that:
+
+| Text | Audio | Synthesis | RTF |
+| --- | --- | --- | --- |
+| "Hello there." | 1.0 s | 1.6 s | 1.64 |
+| one sentence | 3.6 s | 5.9 s | 1.63 |
+| three sentences | 6.8 s | 8.3 s | 1.22 |
+
+Two fixes got it there, both worth knowing about:
+
+- **Short text was pathological.** With Chatterbox's default 800-token budget,
+  "Hello there." took **40.8 s** to produce 0.9 s of audio — the model often
+  fails to emit EOS on a short phrase and grinds through the whole budget before
+  the vocoder trims it. The token cap now scales with the text.
+- **The reference clip was re-encoded every request.** Passing `ref_audio` to
+  `generate()` re-runs the speaker encoder and S3 tokenizer over the full
+  reference each call — a fixed ~3 s cost that dominates short utterances.
+  `prepare_conditionals()` is now called once per voice: **6.5 s → 1.6 s**.
+
+RTF above 1 means synthesis takes longer than the audio lasts, so this is
+comfortable for type-and-listen but is **not** fast enough for the real-time
+conversational loop. Kokoro (RTF ~0.1) remains the agent's live voice; cloning
+is for composed playback.
+
 ## Layout
 
 | Path | Role |
@@ -142,6 +197,8 @@ before Phase 8 packaging.**
 - [x] **Phase 1** — STT standalone (Moonshine small-streaming chosen)
 - [x] **Phase 2** — LLM brain standalone (Qwen3-4B 4-bit, tool calling, prefix cache)
 - [x] **Phase 3** — TTS standalone (Kokoro-82M, sentence-streamed)
+- [x] **Phase 7** — voice cloning, consent-gated (Chatterbox Turbo) *(brought forward)*
+- [x] **Web UI** — enrol a voice, type text, hear it *(Tauri shell still pending)*
 - [ ] Phase 4 — full voice loop (Pipecat)
 - [ ] Phase 5 — tool layer
 - [ ] Phase 6 — local memory and storage

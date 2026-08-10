@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Local Voice Agent</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --line: #262b36;
+    --text: #e6e9ef; --dim: #949cad; --accent: #7aa2f7; --ok: #9ece6a;
+    --warn: #e0af68; --err: #f7768e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 2rem 1rem 4rem; background: var(--bg); color: var(--text);
+    font: 15px/1.55 ui-sans-serif, -apple-system, "SF Pro Text", system-ui, sans-serif;
+  }
+  main { max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 1.4rem; margin: 0 0 .25rem; letter-spacing: -0.01em; }
+  .sub { color: var(--dim); margin: 0 0 2rem; font-size: .9rem; }
+  section {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 1.25rem; margin-bottom: 1.25rem;
+  }
+  h2 { font-size: .78rem; text-transform: uppercase; letter-spacing: .09em;
+       color: var(--dim); margin: 0 0 1rem; font-weight: 600; }
+  label { display: block; font-size: .82rem; color: var(--dim); margin: .9rem 0 .3rem; }
+  input, textarea, select {
+    width: 100%; padding: .6rem .7rem; background: #0d0f14; color: var(--text);
+    border: 1px solid var(--line); border-radius: 8px; font: inherit;
+  }
+  textarea { min-height: 96px; resize: vertical; }
+  input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); }
+  button {
+    padding: .6rem 1rem; border-radius: 8px; border: 1px solid var(--line);
+    background: #222735; color: var(--text); font: inherit; cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); color: #0b0d12; border-color: var(--accent); font-weight: 600; }
+  button.danger { color: var(--err); }
+  .row { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
+  .muted { color: var(--dim); font-size: .82rem; }
+  .status { margin-top: .8rem; font-size: .85rem; min-height: 1.2em; }
+  .ok { color: var(--ok); } .err { color: var(--err); } .warn { color: var(--warn); }
+  .consent {
+    border-left: 3px solid var(--warn); padding-left: .9rem; margin: 1rem 0;
+    font-size: .85rem; color: var(--dim);
+  }
+  code { background: #0d0f14; padding: .12rem .4rem; border-radius: 4px; color: var(--warn); }
+  .voice { display: flex; justify-content: space-between; align-items: center;
+           padding: .55rem 0; border-bottom: 1px solid var(--line); font-size: .88rem; }
+  .voice:last-child { border-bottom: none; }
+  .meter { height: 4px; background: #0d0f14; border-radius: 2px; overflow: hidden; margin-top: .6rem; }
+  .meter > i { display: block; height: 100%; width: 0; background: var(--ok); transition: width .1s; }
+  audio { width: 100%; margin-top: .9rem; }
+  .metrics { font-size: .78rem; color: var(--dim); margin-top: .5rem; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Local Voice Agent</h1>
+  <p class="sub">Runs entirely on this Mac. No audio leaves the machine.</p>
+
+  <section>
+    <h2>1 · Enrol a voice</h2>
+    <div class="consent">
+      Cloning a voice is consequential. Only enrol a voice you own or have explicit
+      permission to use. Your reference clip is encrypted at rest with a key held in
+      the macOS Keychain, and you can delete it at any time.
+    </div>
+
+    <label for="name">Whose voice is this?</label>
+    <input id="name" placeholder="Your name" autocomplete="off">
+
+    <label for="consent">Type <code id="phrase">…</code> to confirm consent</label>
+    <input id="consent" placeholder="Type the phrase exactly" autocomplete="off">
+
+    <label>Reference clip <span class="muted">(<span id="minmax">…</span>, read anything aloud naturally)</span></label>
+    <div class="row">
+      <button id="rec">● Record</button>
+      <button id="stop" disabled>■ Stop</button>
+      <span class="muted">or</span>
+      <input type="file" id="file" accept="audio/*" style="flex:1; min-width:180px">
+    </div>
+    <div class="meter"><i id="level"></i></div>
+    <audio id="preview" controls hidden></audio>
+
+    <div class="row" style="margin-top:1rem">
+      <button class="primary" id="enrol" disabled>Enrol this voice</button>
+      <span class="muted" id="clipinfo"></span>
+    </div>
+    <div class="status" id="enrolStatus"></div>
+  </section>
+
+  <section>
+    <h2>2 · Saved voices</h2>
+    <div id="voices"><span class="muted">None yet.</span></div>
+    <div class="row" style="margin-top:1rem">
+      <button class="danger" id="wipe">Delete all my data</button>
+    </div>
+    <div class="status" id="wipeStatus"></div>
+  </section>
+
+  <section>
+    <h2>3 · Write something to hear</h2>
+    <label for="voiceSel">Voice</label>
+    <select id="voiceSel"></select>
+
+    <label for="text">Text</label>
+    <textarea id="text" placeholder="Type what you want to hear…">Hello. This is my own voice, running entirely on my laptop.</textarea>
+
+    <div class="row" style="margin-top:1rem">
+      <button class="primary" id="speak" disabled>Speak it</button>
+      <span class="muted" id="speakHint">Enrol a voice first.</span>
+    </div>
+    <div class="status" id="speakStatus"></div>
+    <audio id="out" controls hidden></audio>
+    <div class="metrics" id="metrics"></div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let clipBlob = null, clipSeconds = 0, recorder = null, chunks = [], cfg = {};
+
+const setStatus = (el, msg, cls = "") => { el.textContent = msg; el.className = "status " + cls; };
+
+async function loadConfig() {
+  cfg = await (await fetch("/api/config")).json();
+  $("phrase").textContent = cfg.consent_phrase;
+  $("minmax").textContent = `${cfg.min_seconds}–${cfg.max_seconds}s`;
+}
+
+// --- recording -----------------------------------------------------------
+$("rec").onclick = async () => {
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    return setStatus($("enrolStatus"), "Microphone permission denied.", "err");
+  }
+  chunks = [];
+  recorder = new MediaRecorder(stream);
+  recorder.ondataavailable = e => chunks.push(e.data);
+
+  // Live level meter, so it is obvious the mic is actually working.
+  const ctx = new AudioContext();
+  const analyser = ctx.createAnalyser();
+  ctx.createMediaStreamSource(stream).connect(analyser);
+  const buf = new Uint8Array(analyser.frequencyBinCount);
+  const started = Date.now();
+  const tick = () => {
+    if (recorder.state !== "recording") return;
+    analyser.getByteTimeDomainData(buf);
+    const peak = Math.max(...buf.map(v => Math.abs(v - 128))) / 128;
+    $("level").style.width = Math.min(100, peak * 180) + "%";
+    const secs = (Date.now() - started) / 1000;
+    $("clipinfo").textContent = secs.toFixed(1) + "s";
+    if (secs >= cfg.max_seconds) recorder.stop();
+    requestAnimationFrame(tick);
+  };
+
+  recorder.onstop = () => {
+    stream.getTracks().forEach(t => t.stop());
+    ctx.close();
+    $("level").style.width = "0";
+    clipBlob = new Blob(chunks, { type: recorder.mimeType });
+    clipSeconds = (Date.now() - started) / 1000;
+    $("preview").src = URL.createObjectURL(clipBlob);
+    $("preview").hidden = false;
+    $("rec").disabled = false; $("stop").disabled = true;
+    validate();
+  };
+
+  recorder.start();
+  $("rec").disabled = true; $("stop").disabled = false;
+  setStatus($("enrolStatus"), "Recording… speak naturally.", "warn");
+  tick();
+};
+
+$("stop").onclick = () => recorder && recorder.stop();
+
+$("file").onchange = e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  clipBlob = f;
+  const audio = new Audio(URL.createObjectURL(f));
+  audio.onloadedmetadata = () => {
+    clipSeconds = audio.duration;
+    $("clipinfo").textContent = clipSeconds.toFixed(1) + "s";
+    validate();
+  };
+  $("preview").src = audio.src; $("preview").hidden = false;
+};
+
+function validate() {
+  const ready = clipBlob && $("name").value.trim() &&
+    $("consent").value.trim().toLowerCase() === cfg.consent_phrase.toLowerCase();
+  $("enrol").disabled = !ready;
+  if (clipBlob && clipSeconds && clipSeconds < cfg.min_seconds)
+    setStatus($("enrolStatus"), `Clip is ${clipSeconds.toFixed(1)}s; ${cfg.min_seconds}s minimum.`, "warn");
+}
+["name", "consent"].forEach(id => $(id).addEventListener("input", validate));
+
+// --- enrolment -----------------------------------------------------------
+$("enrol").onclick = async () => {
+  const fd = new FormData();
+  fd.append("speaker_name", $("name").value);
+  fd.append("consent_phrase", $("consent").value);
+  fd.append("clip", clipBlob, "reference.webm");
+
+  $("enrol").disabled = true;
+  setStatus($("enrolStatus"), "Encrypting and saving…");
+  const res = await fetch("/api/voices", { method: "POST", body: fd });
+  const body = await res.json();
+  if (!res.ok) { setStatus($("enrolStatus"), body.detail || "Failed.", "err"); $("enrol").disabled = false; return; }
+  setStatus($("enrolStatus"), `Enrolled ${body.speaker_name} (${body.duration_seconds}s).`, "ok");
+  $("consent").value = ""; clipBlob = null; $("preview").hidden = true;
+  refreshVoices();
+};
+
+// --- voices --------------------------------------------------------------
+async function refreshVoices() {
+  const voices = await (await fetch("/api/voices")).json();
+  const list = $("voices"), sel = $("voiceSel");
+  sel.innerHTML = "";
+  if (!voices.length) {
+    list.innerHTML = '<span class="muted">None yet.</span>';
+    $("speak").disabled = true;
+    $("speakHint").textContent = "Enrol a voice first.";
+    return;
+  }
+  list.innerHTML = "";
+  voices.forEach(v => {
+    const row = document.createElement("div");
+    row.className = "voice";
+    row.innerHTML = `<span><strong>${v.speaker_name}</strong>
+      <span class="muted">· ${v.duration_seconds}s · consented ${new Date(v.consent_granted_at).toLocaleString()}</span></span>`;
+    const del = document.createElement("button");
+    del.className = "danger"; del.textContent = "Delete";
+    del.onclick = async () => { await fetch("/api/voices/" + v.profile_id, { method: "DELETE" }); refreshVoices(); };
+    row.appendChild(del);
+    list.appendChild(row);
+
+    const opt = document.createElement("option");
+    opt.value = v.profile_id; opt.textContent = v.speaker_name;
+    sel.appendChild(opt);
+  });
+  $("speak").disabled = false;
+  $("speakHint").textContent = "";
+}
+
+$("wipe").onclick = async () => {
+  const res = await fetch("/api/data", { method: "DELETE" });
+  const body = await res.json();
+  setStatus($("wipeStatus"), `Deleted ${body.deleted_profiles} profile(s) and destroyed the encryption key.`, "ok");
+  refreshVoices();
+};
+
+// --- synthesis -----------------------------------------------------------
+$("speak").onclick = async () => {
+  const fd = new FormData();
+  fd.append("text", $("text").value);
+  fd.append("profile_id", $("voiceSel").value);
+
+  $("speak").disabled = true;
+  setStatus($("speakStatus"), "Synthesizing… (first run loads the model, ~30s)");
+  const t0 = performance.now();
+  const res = await fetch("/api/speak", { method: "POST", body: fd });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    setStatus($("speakStatus"), body.detail || "Synthesis failed.", "err");
+    $("speak").disabled = false; return;
+  }
+  const blob = await res.blob();
+  const wall = ((performance.now() - t0) / 1000).toFixed(1);
+  $("out").src = URL.createObjectURL(blob);
+  $("out").hidden = false;
+  $("out").play();
+  setStatus($("speakStatus"), "Done.", "ok");
+  $("metrics").textContent =
+    `${res.headers.get("X-Audio-Seconds")}s of audio · synthesis ${res.headers.get("X-Synthesis-Ms")}ms · ` +
+    `realtime factor ${res.headers.get("X-Realtime-Factor")} · round trip ${wall}s`;
+  $("speak").disabled = false;
+};
+
+loadConfig().then(refreshVoices);
+</script>
+</body>
+</html>

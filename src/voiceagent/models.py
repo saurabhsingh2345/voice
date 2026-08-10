@@ -190,6 +190,24 @@ REGISTRY: tuple[ModelSpec, ...] = (
             "the budget ever tightens."
         ),
     ),
+    ModelSpec(
+        name="Chatterbox Turbo (MLX, fp16)",
+        stage=Stage.TTS,
+        license="MIT",
+        repo="mlx-community/chatterbox-turbo-fp16",
+        weights_gb=2.82,
+        runtime_overhead_gb=0.64,
+        phase=7,
+        default=False,
+        measured=True,
+        notes=(
+            "Voice cloning. 350M params, MIT (Resemble AI), zero-shot from a "
+            "~10s reference clip, 24 kHz. Measured 2.82 GiB after load, 3.46 GiB "
+            "peak during generation. Loaded only when a cloned voice is used -- "
+            "it is NOT co-resident with Kokoro in the default pipeline. Chosen "
+            "over Fish Speech, whose weights are CC-BY-NC-SA-4.0."
+        ),
+    ),
 )
 
 

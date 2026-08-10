@@ -9,10 +9,15 @@ license = { text = "Apache-2.0" }
 # Models (STT/LLM/TTS) are deliberately NOT installed yet -- each phase adds its own
 # extra so we can measure the incremental memory cost of every component.
 dependencies = [
+    "cryptography>=43",
+    "fastapi>=0.115",
+    "keyring>=25",
     "mlx>=0.32",  # Phase 0 must prove Metal/MLX works before any model is chosen.
     "numpy>=2.0",  # the audio type shared across the stt/tts module boundaries
     "psutil>=6.0",
+    "python-multipart>=0.0.12",
     "rich>=13.7",
+    "uvicorn>=0.32",
 ]
 
 [project.optional-dependencies]
@@ -38,10 +43,26 @@ tts = [
     "mlx-audio>=0.4.7",
     "sounddevice>=0.5",  # playback
     "soundfile>=0.12",   # writing wavs for inspection
+    # Kokoro's text frontend. Deliberately NOT `misaki[en]`: that extra pulls
+    # phonemizer-fork (GPLv3), which would make the packaged app GPL. We list
+    # the pieces of `en` we actually use and omit the espeak fallback --
+    # see voiceagent.tts.kokoro_engine._disable_gpl_espeak_fallback.
+    "misaki>=0.9.4",
+    "num2words>=0.5",  # LGPL -- recorded exception, see models.ACCEPTED_EXCEPTIONS
+    "spacy>=3.8",
+]
+
+# Phase 7 (voice cloning) -- Chatterbox Turbo is MIT and runs through mlx-audio.
+clone = [
+    "mlx>=0.32",
+    "mlx-audio>=0.4.7",
+    "soundfile>=0.12",
+    "miniaudio>=1.6",  # decodes browser webm/ogg recordings without ffmpeg
 ]
 
 [project.scripts]
 voice-doctor = "voiceagent.diagnostics.doctor:main"
+voice-web = "voiceagent.web.server:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -49,6 +70,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/voiceagent"]
+artifacts = ["src/voiceagent/web/static/*"]
 
 [tool.uv]
 # Keep the venv reproducible and local to the project.
