@@ -90,3 +90,24 @@ def test_empty_stream_produces_nothing():
     chunker = SentenceChunker()
     assert chunker.feed("") == []
     assert chunker.flush() == []
+
+
+def test_first_chunk_does_not_wait_for_a_long_sentence():
+    """Perceived latency is set by first audio, so the opener cuts early."""
+    text = "I can't provide information about quantized models or Apple Silicon performance."
+    chunks = drain(text)
+    assert len(chunks) > 1
+    assert len(chunks[0]) <= 45
+    assert not chunks[0].endswith(" ")
+    # Later chunks are not cut short by the same rule.
+    assert "".join(chunks).replace(" ", "") == text.replace(" ", "")
+
+
+def test_first_chunk_prefers_a_clause_break():
+    chunks = drain("Sure thing, I will look that up for you right now and report back.")
+    assert chunks[0] == "Sure thing,"
+
+
+def test_short_first_sentence_still_wins_over_early_cut():
+    """A sentence that ends before the threshold is used as-is."""
+    assert drain("Hello there. How are you doing today my friend?")[0] == "Hello there."

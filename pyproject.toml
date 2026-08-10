@@ -59,10 +59,15 @@ clone = [
     "soundfile>=0.12",
     "miniaudio>=1.6",  # decodes browser webm/ogg recordings without ffmpeg
 ]
+loop = [
+    "onnxruntime>=1.20",
+    "silero-vad>=5.1",
+]
 
 [project.scripts]
 voice-doctor = "voiceagent.diagnostics.doctor:main"
 voice-web = "voiceagent.web.server:main"
+voice-chat = "voiceagent.orchestration.loop:main"
 
 [build-system]
 requires = ["hatchling"]

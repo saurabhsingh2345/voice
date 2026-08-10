@@ -122,6 +122,56 @@ since copyleft arrives through the dependency tree. One accepted exception is
 recorded: `num2words` (LGPL-2.1), used unmodified by misaki — **needs a decision
 before Phase 8 packaging.**
 
+## Phase 4 — the live voice loop
+
+```bash
+uv run voice-chat                              # talk to it (headphones advised)
+uv run voice-chat --replay fixtures/short.wav  # drive from a file, no mic
+uv run voice-chat --no-barge-in                # disable interruption
+```
+
+Loads in ~8–14 s, **~5.5 GiB resident** for VAD + STT + LLM + TTS together.
+
+Per-turn latency, measured from the moment you stop talking:
+
+| Stage | Turn 1 | Later turns |
+| --- | --- | --- |
+| STT final | 163 ms | 370 ms |
+| LLM first token | ~1400 ms | 585 ms |
+| TTS first audio | 2383 ms | 1832 ms |
+
+**The sub-1 s target is not met.** Turn one costs ~1.4 s at the LLM because the
+prefix cache is cold; later turns are ~0.6 s. TTS first audio then adds the wait
+for enough text to speak. Priming the cache at load was tried and **did not
+help** (1382 ms vs 1457 ms — noise) while hanging the loader on executor
+shutdown, so it was removed; `Agent.prime()` remains if someone wants to revisit.
+
+Numbers above were taken with the machine relatively quiet. Under the memory
+pressure this Mac is usually in (1.6 GiB free, 25 GiB swap), the same loop
+measured 4.9 s to first token. Close other apps before judging it.
+
+### Why not Pipecat
+
+The brief specifies Pipecat, and this deviates. Reasons:
+
+- Pipecat has **no MLX LLM service** — its only local LLM path is Ollama
+  (llama.cpp), which contradicts the MLX-first constraint.
+- Its local audio transport needs `pyaudio`, which needs a Homebrew
+  `portaudio` that would then have to be bundled for the Tauri build.
+  `sounddevice` already vendors PortAudio in its wheel.
+- Using it meant writing custom services for all three engines plus a
+  sounddevice transport — more adapter code than the loop itself.
+
+The engines sit behind interfaces, so swapping this orchestrator for Pipecat
+later touches only `orchestration/loop.py`.
+
+### Echo, and why you want headphones
+
+There is no acoustic echo cancellation, so on laptop speakers the mic hears the
+agent and can interrupt it. Mitigated with a stricter VAD threshold during
+playback (0.85 vs 0.5) plus a 350 ms grace window, but headphones remove the
+problem properly. AEC is the real fix and is not built.
+
 ## Voice cloning + web UI
 
 ```bash
@@ -197,6 +247,7 @@ is for composed playback.
 - [x] **Phase 1** — STT standalone (Moonshine small-streaming chosen)
 - [x] **Phase 2** — LLM brain standalone (Qwen3-4B 4-bit, tool calling, prefix cache)
 - [x] **Phase 3** — TTS standalone (Kokoro-82M, sentence-streamed)
+- [x] **Phase 4** — full voice loop with VAD + barge-in (not Pipecat, see below)
 - [x] **Phase 7** — voice cloning, consent-gated (Chatterbox Turbo) *(brought forward)*
 - [x] **Web UI** — enrol a voice, type text, hear it *(Tauri shell still pending)*
 - [ ] Phase 4 — full voice loop (Pipecat)

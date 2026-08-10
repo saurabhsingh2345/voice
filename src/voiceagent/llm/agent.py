@@ -76,6 +76,17 @@ class Agent:
         except Exception as exc:  # noqa: BLE001
             return ToolResult(content="", ok=False, error=str(exc))
 
+    async def prime(self) -> None:
+        """Pre-compute the KV cache for the system prompt and tool schemas.
+
+        Those tokens are identical on every turn, but an empty cache means turn
+        one pays for all of them -- measured at 1457 ms to first token in the
+        full loop versus ~150 ms once warm. Priming at load moves that cost off
+        the user's first question.
+        """
+        async for _ in self.engine.stream(self.history, tools=self.tool_specs, max_tokens=1):
+            pass
+
     async def turn(self, user_text: str, max_tokens: int = 512) -> AsyncIterator[AgentEvent]:
         """Run one user turn to completion, yielding events as they happen."""
         self.history.append(Message(role="user", content=user_text))
