@@ -65,6 +65,7 @@ class Agent:
         system_prompt: str = SYSTEM_PROMPT,
         registry: "ToolRegistry | None" = None,
         confirm=None,
+        store=None,
     ) -> None:
         from voiceagent.tools.registry import ToolRegistry
 
@@ -72,6 +73,29 @@ class Agent:
         self.registry = registry or ToolRegistry(tools or [])
         self.confirm = confirm or _deny_by_default
         self.history: list[Message] = [Message(role="system", content=system_prompt)]
+
+        #: Optional EncryptedStore. When set, turns are persisted and relevant
+        #: past facts are retrieved into the prompt.
+        self.store = store
+        self.conversation_id: int | None = None
+        if self.store is not None:
+            self.conversation_id = self.store.start_conversation()
+
+    def _retrieve(self, user_text: str) -> str | None:
+        """Fetch memories relevant to this turn, as a prompt fragment.
+
+        Injected as a system message rather than appended to the user's words,
+        so the model cannot mistake recalled context for something the user just
+        said -- and so it stays out of the cached prefix, which must not change
+        between turns.
+        """
+        if self.store is None:
+            return None
+        hits = self.store.recall(user_text, limit=3)
+        if not hits:
+            return None
+        facts = "\n".join(f"- {m.content}" for m in hits)
+        return f"Relevant things you know about this user:\n{facts}"
 
     @property
     def tools(self) -> dict[str, Tool]:
@@ -106,7 +130,13 @@ class Agent:
 
     async def turn(self, user_text: str, max_tokens: int = 512) -> AsyncIterator[AgentEvent]:
         """Run one user turn to completion, yielding events as they happen."""
+        recalled = self._retrieve(user_text)
+        if recalled:
+            self.history.append(Message(role="system", content=recalled))
+
         self.history.append(Message(role="user", content=user_text))
+        if self.store is not None:
+            self.store.add_message(self.conversation_id, "user", user_text)
 
         for _ in range(MAX_ITERATIONS):
             spoken = ""
@@ -137,6 +167,8 @@ class Agent:
             )
 
             if not calls:
+                if self.store is not None and spoken.strip():
+                    self.store.add_message(self.conversation_id, "assistant", spoken.strip())
                 yield AgentEvent(kind="done")
                 return
 

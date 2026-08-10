@@ -90,6 +90,7 @@ class VoiceLoop:
         self._playback_started_at = 0.0
         self._interrupt = threading.Event()
         self.sandbox = None
+        self.store = None
 
     # --- setup ------------------------------------------------------------
 
@@ -97,7 +98,9 @@ class VoiceLoop:
         from voiceagent.llm.mlx_engine import MLXLLMEngine
         from voiceagent.stt.moonshine_engine import MoonshineEngine
         from voiceagent.tools.files import ListFilesTool, ReadFileTool, Sandbox, WriteFileTool
+        from voiceagent.storage.db import EncryptedStore
         from voiceagent.tools.http import HttpRequestTool
+        from voiceagent.tools.memory import ForgetAllTool, RecallTool, RememberTool
         from voiceagent.tools.registry import ToolRegistry
         from voiceagent.tools.shell import ShellTool
         from voiceagent.tts.kokoro_engine import KokoroEngine
@@ -116,6 +119,7 @@ class VoiceLoop:
 
         sandbox = Sandbox()
         sandbox.ensure_root()
+        self.store = EncryptedStore()
         registry = ToolRegistry(
             [
                 ListFilesTool(sandbox),
@@ -123,9 +127,14 @@ class VoiceLoop:
                 WriteFileTool(sandbox),
                 ShellTool(sandbox=sandbox),
                 HttpRequestTool(),
+                RememberTool(self.store),
+                RecallTool(self.store),
+                ForgetAllTool(self.store),
             ]
         )
-        self.agent = Agent(llm, registry=registry, confirm=self._confirm)
+        self.agent = Agent(
+            llm, registry=registry, confirm=self._confirm, store=self.store
+        )
         self.sandbox = sandbox
         console.print(f"[dim]  workspace: {sandbox.root}[/]")
         console.print(f"[dim]  tools: {', '.join(registry.names)}[/]")
@@ -154,6 +163,8 @@ class VoiceLoop:
                 component.unload()
         if self.agent is not None:
             self.agent.engine.unload()
+        if self.store is not None:
+            self.store.close()
 
     # --- the loop ---------------------------------------------------------
 

@@ -219,6 +219,35 @@ talked into probing your LAN or calling this project's own API on 127.0.0.1.
 to wire up a prompt. Tested. Approval is typed, not spoken — "yes" is exactly
 the word a speech recogniser mishears, and this gate protects the filesystem.
 
+## Phase 6 — encrypted memory
+
+Conversations persist across restarts, message bodies are encrypted at rest, and
+everything can be wiped on command. Three tools expose it: `remember`, `recall`,
+and `forget_everything` (confirmation-gated).
+
+Retrieval runs before each turn: relevant past facts are injected as a *system*
+message, not appended to the user's words, so the model can't mistake recalled
+context for something just said.
+
+### Not SQLCipher — and what that costs
+
+`sqlcipher3-binary` publishes **no arm64 macOS wheel** (manylinux x86_64 only),
+so using it needs `brew install sqlcipher` plus a source build — another system
+library to bundle for Tauri, the same reason pyaudio was rejected in Phase 4.
+
+Instead: plain SQLite with every message body encrypted via Fernet
+(AES-128-CBC + HMAC), key in the macOS Keychain. Honestly stated:
+
+- **Same as SQLCipher** — content is unreadable without the Keychain key, and
+  destroying the key makes it unrecoverable. Both are tested.
+- **Weaker than SQLCipher** — the schema, row counts and timestamps stay
+  visible to anyone opening the file. SQLCipher encrypts the whole page store.
+- **Consequence** — content can't be searched in SQL, so recall decrypts and
+  scores in Python. Fine at personal scale, wrong at millions of rows.
+
+Swapping in SQLCipher means replacing the connection factory in
+`storage/db.py`, if the system dependency ever becomes acceptable.
+
 ## Voice cloning + web UI
 
 ```bash
@@ -296,6 +325,7 @@ is for composed playback.
 - [x] **Phase 3** — TTS standalone (Kokoro-82M, sentence-streamed)
 - [x] **Phase 4** — full voice loop with VAD + barge-in (not Pipecat, see below)
 - [x] **Phase 5** — tool layer: files, shell, HTTP, with a confirmation gate
+- [x] **Phase 6** — encrypted history + memory (not SQLCipher, see below)
 - [x] **Phase 7** — voice cloning, consent-gated (Chatterbox Turbo) *(brought forward)*
 - [x] **Web UI** — enrol a voice, type text, hear it *(Tauri shell still pending)*
 - [ ] Phase 4 — full voice loop (Pipecat)
