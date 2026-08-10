@@ -15,6 +15,7 @@ computed estimates and MUST be replaced with real numbers as each phase lands.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import Enum
 
@@ -171,15 +172,23 @@ REGISTRY: tuple[ModelSpec, ...] = (
         ),
     ),
     ModelSpec(
-        name="Kokoro-82M",
+        name="Kokoro-82M (MLX, bf16)",
         stage=Stage.TTS,
         license="Apache-2.0",
-        repo="hexgrad/Kokoro-82M",
-        weights_gb=0.33,
-        runtime_overhead_gb=0.15,
+        repo="mlx-community/Kokoro-82M-bf16",
+        weights_gb=0.68,
+        runtime_overhead_gb=0.10,
         phase=3,
         default=True,
-        notes="82M params. Overhead is the vocoder + output audio buffer.",
+        measured=True,
+        notes=(
+            "Measured 0.68 GiB MLX peak (above the 0.33 GiB estimate: bf16, not "
+            "4-bit, and the figure includes the vocoder), load 3.3s, 24 kHz "
+            "output. First audio 822 ms synthesizing a whole reply vs 280 ms "
+            "sentence-streamed. Runs with the GPL espeak fallback DISABLED -- "
+            "see voiceagent.tts.kokoro_engine. 8-bit/4-bit variants exist if "
+            "the budget ever tightens."
+        ),
     ),
 )
 
@@ -195,6 +204,82 @@ FRAMEWORK_OVERHEAD_GB = 1.20
 
 #: Headroom macOS needs to avoid swapping/memory pressure on an 18 GiB machine.
 OS_RESERVE_GB = 4.0
+
+
+# --- Dependency licenses --------------------------------------------------
+#
+# Model licenses are only half the problem. Phase 3 nearly pulled in
+# `phonemizer-fork` (GPLv3) as a transitive dependency of Kokoro's text
+# frontend, which would have forced the whole desktop app to be GPL. Copyleft
+# arrives through the dependency tree, so the tree gets audited too.
+
+#: Tokens that mark a copyleft or non-commercial license, matched on word
+#: boundaries against a SHORT license identifier -- never against free text.
+#: Packages often stuff their entire LICENSE file into the metadata (scipy's is
+#: 47 KB and quotes the GPL because it bundles libgfortran, which is BSD-licensed
+#: code shipping alongside a GPL-with-runtime-exception binary). Substring
+#: matching on that produces confident nonsense.
+COPYLEFT_PATTERN = re.compile(
+    r"\b(?:A?GPL|LGPL|GNU (?:Affero |Lesser )?General Public|SSPL|CPML|"
+    r"CC[- ]BY[- ]NC|noncommercial|non-commercial)\b",
+    re.IGNORECASE,
+)
+
+#: A License field longer than this is a license *text*, not an identifier.
+MAX_LICENSE_ID_CHARS = 80
+
+#: Packages whose non-permissive license we have consciously accepted, with why.
+ACCEPTED_EXCEPTIONS: dict[str, str] = {
+    "num2words": (
+        "LGPL-2.1. Imported unmodified by misaki for number-to-words in the "
+        "TTS frontend. LGPL permits commercial use of an unmodified library, "
+        "but it is outside the Apache/MIT/BSD rule and needs a decision before "
+        "Phase 8 packaging."
+    ),
+}
+
+#: Packages that must never be installed, and why.
+FORBIDDEN_PACKAGES: dict[str, str] = {
+    "phonemizer": "GPLv3 -- would make the packaged app GPL.",
+    "phonemizer-fork": "GPLv3 -- would make the packaged app GPL.",
+}
+
+
+def audit_installed_packages() -> tuple[list[str], list[str]]:
+    """Scan the live environment. Returns (violations, accepted_notes)."""
+    import importlib.metadata as md
+
+    violations: list[str] = []
+    accepted: list[str] = []
+
+    for dist in md.distributions():
+        name = (dist.metadata["Name"] or "").strip()
+        if not name:
+            continue
+
+        if name.lower() in FORBIDDEN_PACKAGES:
+            violations.append(f"{name}: INSTALLED but forbidden -- {FORBIDDEN_PACKAGES[name.lower()]}")
+            continue
+
+        # Prefer structured signals: PEP 639 License-Expression, then the
+        # license classifiers, then a short License field.
+        declared = (dist.metadata["License-Expression"] or "").strip()
+        if not declared:
+            raw = (dist.metadata["License"] or "").strip()
+            declared = raw if len(raw) <= MAX_LICENSE_ID_CHARS else ""
+        classifiers = " ".join(
+            c for c in (dist.metadata.get_all("Classifier") or []) if "License" in c
+        )
+        identifier = f"{declared} {classifiers}".strip()
+
+        if not COPYLEFT_PATTERN.search(identifier):
+            continue
+        if name.lower() in ACCEPTED_EXCEPTIONS:
+            accepted.append(f"{name}: {ACCEPTED_EXCEPTIONS[name.lower()]}")
+        else:
+            violations.append(f"{name}: non-permissive license detected ({declared or classifiers})")
+
+    return violations, accepted
 
 
 def default_models() -> list[ModelSpec]:

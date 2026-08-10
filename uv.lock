@@ -1152,6 +1152,8 @@ stt = [
 tts = [
     { name = "mlx" },
     { name = "mlx-audio" },
+    { name = "sounddevice" },
+    { name = "soundfile" },
 ]
 
 [package.dev-dependencies]
@@ -1165,7 +1167,7 @@ requires-dist = [
     { name = "mlx", marker = "extra == 'llm'", specifier = ">=0.32" },
     { name = "mlx", marker = "extra == 'stt'", specifier = ">=0.32" },
     { name = "mlx", marker = "extra == 'tts'", specifier = ">=0.32" },
-    { name = "mlx-audio", marker = "extra == 'tts'", specifier = ">=0.2" },
+    { name = "mlx-audio", marker = "extra == 'tts'", specifier = ">=0.4.7" },
     { name = "mlx-lm", marker = "extra == 'llm'", specifier = ">=0.28" },
     { name = "mlx-whisper", marker = "extra == 'stt'", specifier = ">=0.4.3" },
     { name = "moonshine-voice", marker = "extra == 'stt'", specifier = ">=0.1.1" },
@@ -1174,7 +1176,9 @@ requires-dist = [
     { name = "psutil", specifier = ">=6.0" },
     { name = "rich", specifier = ">=13.7" },
     { name = "sounddevice", marker = "extra == 'stt'", specifier = ">=0.5" },
+    { name = "sounddevice", marker = "extra == 'tts'", specifier = ">=0.5" },
     { name = "soundfile", marker = "extra == 'stt'", specifier = ">=0.12" },
+    { name = "soundfile", marker = "extra == 'tts'", specifier = ">=0.12" },
 ]
 provides-extras = ["stt", "llm", "tts"]
 

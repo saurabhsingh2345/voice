@@ -85,6 +85,43 @@ uv run python -m voiceagent.llm.benchmark      # latency tables above
 uv run python -m pytest tests/ -q              # 92 tool-parser tests
 ```
 
+## Phase 3 results — TTS
+
+Kokoro-82M bf16 on MLX. Load 3.3 s, **0.68 GiB** peak, 24 kHz output.
+
+| Approach | First audio |
+| --- | --- |
+| synthesize the whole reply, then speak | 822 ms |
+| **sentence-streamed** | **280 ms** |
+
+Streaming starts speaking 543 ms sooner — 66 % less silence — because the first
+sentence is synthesized while the LLM is still writing the rest.
+
+```bash
+uv run python -m voiceagent.tts.demo                        # batch vs streamed
+uv run python -m voiceagent.tts.demo --text "Hello there."  # speak a line
+uv run python -m voiceagent.tts.demo --voices               # list voices
+```
+
+### A GPL dependency was avoided deliberately
+
+Kokoro's text frontend (misaki) falls back to `phonemizer` for out-of-dictionary
+words, and **phonemizer is GPLv3** — viral copyleft that would force the entire
+packaged desktop app to be GPL. misaki makes that fallback optional; only
+mlx-audio imports it unconditionally. `tts/kokoro_engine.py` installs a stub so
+the fallback is refused and the GPL package is never installed.
+
+The cost is that unpronounceable words are skipped rather than guessed. Measured
+coverage on assistant-style text: technical jargon, brand names, numbers, and
+everyday speech all resolve cleanly. Only bare symbols (`$`) and raw filenames
+(`pyproject.toml`) fail — and the system prompt already tells the model to spell
+symbols out. `KokoroEngine.check_coverage(text)` reports gaps for any string.
+
+`voice-doctor` now audits every installed package's license, not just the models,
+since copyleft arrives through the dependency tree. One accepted exception is
+recorded: `num2words` (LGPL-2.1), used unmodified by misaki — **needs a decision
+before Phase 8 packaging.**
+
 ## Layout
 
 | Path | Role |
@@ -104,7 +141,7 @@ uv run python -m pytest tests/ -q              # 92 tool-parser tests
 - [x] **Phase 0** — environment and memory audit
 - [x] **Phase 1** — STT standalone (Moonshine small-streaming chosen)
 - [x] **Phase 2** — LLM brain standalone (Qwen3-4B 4-bit, tool calling, prefix cache)
-- [ ] Phase 3 — TTS standalone
+- [x] **Phase 3** — TTS standalone (Kokoro-82M, sentence-streamed)
 - [ ] Phase 4 — full voice loop (Pipecat)
 - [ ] Phase 5 — tool layer
 - [ ] Phase 6 — local memory and storage

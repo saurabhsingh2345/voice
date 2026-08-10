@@ -208,6 +208,18 @@ def _report_pressure(mem: dict[str, float], projected: float) -> None:
 
 def report_licenses() -> bool:
     violations = M.audit_licenses()
+    pkg_violations, accepted = M.audit_installed_packages()
+    violations += pkg_violations
+
+    if accepted:
+        console.print(
+            Panel(
+                "\n".join(f"- {note}" for note in accepted),
+                title="Accepted license exceptions",
+                border_style="yellow",
+            )
+        )
+
     if violations:
         console.print(Panel("\n".join(violations), title="LICENSE VIOLATIONS", border_style="red"))
         return False

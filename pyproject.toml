@@ -35,7 +35,9 @@ llm = [
 # Phase 3 (TTS)
 tts = [
     "mlx>=0.32",
-    "mlx-audio>=0.2",
+    "mlx-audio>=0.4.7",
+    "sounddevice>=0.5",  # playback
+    "soundfile>=0.12",   # writing wavs for inspection
 ]
 
 [project.scripts]
