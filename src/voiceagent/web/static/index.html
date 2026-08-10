@@ -124,6 +124,46 @@
 const $ = id => document.getElementById(id);
 let clipBlob = null, clipSeconds = 0, recorder = null, chunks = [], cfg = {};
 
+// MediaRecorder hands back webm/opus, which neither libsndfile nor miniaudio
+// can read. The browser can always decode its own recording, so we convert to
+// mono 16-bit WAV here and the server only ever sees a format it understands.
+// This also covers m4a/mp3 uploads for free.
+async function blobToWav(blob) {
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const decoded = await ctx.decodeAudioData(await blob.arrayBuffer());
+  await ctx.close();
+
+  // Downmix to mono.
+  const n = decoded.length;
+  const mono = new Float32Array(n);
+  for (let c = 0; c < decoded.numberOfChannels; c++) {
+    const data = decoded.getChannelData(c);
+    for (let i = 0; i < n; i++) mono[i] += data[i] / decoded.numberOfChannels;
+  }
+
+  const sr = decoded.sampleRate;
+  const buf = new ArrayBuffer(44 + n * 2);
+  const view = new DataView(buf);
+  const str = (off, s) => { for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i)); };
+
+  str(0, "RIFF");  view.setUint32(4, 36 + n * 2, true);
+  str(8, "WAVEfmt ");
+  view.setUint32(16, 16, true);      // PCM header size
+  view.setUint16(20, 1, true);       // format = PCM
+  view.setUint16(22, 1, true);       // channels = mono
+  view.setUint32(24, sr, true);
+  view.setUint32(28, sr * 2, true);  // byte rate
+  view.setUint16(32, 2, true);       // block align
+  view.setUint16(34, 16, true);      // bits per sample
+  str(36, "data"); view.setUint32(40, n * 2, true);
+
+  for (let i = 0; i < n; i++) {
+    const s = Math.max(-1, Math.min(1, mono[i]));
+    view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+  return { blob: new Blob([buf], { type: "audio/wav" }), seconds: n / sr };
+}
+
 const setStatus = (el, msg, cls = "") => { el.textContent = msg; el.className = "status " + cls; };
 
 async function loadConfig() {
@@ -161,15 +201,26 @@ $("rec").onclick = async () => {
     requestAnimationFrame(tick);
   };
 
-  recorder.onstop = () => {
+  recorder.onstop = async () => {
     stream.getTracks().forEach(t => t.stop());
     ctx.close();
     $("level").style.width = "0";
-    clipBlob = new Blob(chunks, { type: recorder.mimeType });
-    clipSeconds = (Date.now() - started) / 1000;
+    $("rec").disabled = false; $("stop").disabled = true;
+
+    const raw = new Blob(chunks, { type: recorder.mimeType });
+    try {
+      setStatus($("enrolStatus"), "Converting…");
+      const wav = await blobToWav(raw);
+      clipBlob = wav.blob;
+      clipSeconds = wav.seconds;
+      setStatus($("enrolStatus"), `Recorded ${clipSeconds.toFixed(1)}s.`, "ok");
+    } catch (e) {
+      clipBlob = null;
+      return setStatus($("enrolStatus"), "Could not process that recording: " + e.message, "err");
+    }
+    $("clipinfo").textContent = clipSeconds.toFixed(1) + "s";
     $("preview").src = URL.createObjectURL(clipBlob);
     $("preview").hidden = false;
-    $("rec").disabled = false; $("stop").disabled = true;
     validate();
   };
 
@@ -181,17 +232,23 @@ $("rec").onclick = async () => {
 
 $("stop").onclick = () => recorder && recorder.stop();
 
-$("file").onchange = e => {
+$("file").onchange = async e => {
   const f = e.target.files[0];
   if (!f) return;
-  clipBlob = f;
-  const audio = new Audio(URL.createObjectURL(f));
-  audio.onloadedmetadata = () => {
-    clipSeconds = audio.duration;
-    $("clipinfo").textContent = clipSeconds.toFixed(1) + "s";
-    validate();
-  };
-  $("preview").src = audio.src; $("preview").hidden = false;
+  try {
+    setStatus($("enrolStatus"), "Converting…");
+    const wav = await blobToWav(f);
+    clipBlob = wav.blob;
+    clipSeconds = wav.seconds;
+    setStatus($("enrolStatus"), `Loaded ${clipSeconds.toFixed(1)}s.`, "ok");
+  } catch (err) {
+    clipBlob = null;
+    return setStatus($("enrolStatus"), "Could not read that file: " + err.message, "err");
+  }
+  $("clipinfo").textContent = clipSeconds.toFixed(1) + "s";
+  $("preview").src = URL.createObjectURL(clipBlob);
+  $("preview").hidden = false;
+  validate();
 };
 
 function validate() {
@@ -208,7 +265,7 @@ $("enrol").onclick = async () => {
   const fd = new FormData();
   fd.append("speaker_name", $("name").value);
   fd.append("consent_phrase", $("consent").value);
-  fd.append("clip", clipBlob, "reference.webm");
+  fd.append("clip", clipBlob, "reference.wav");
 
   $("enrol").disabled = true;
   setStatus($("enrolStatus"), "Encrypting and saving…");
