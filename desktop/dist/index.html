@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Local Voice Agent</title>
+<style>
+  body {
+    margin: 0; height: 100vh; display: grid; place-items: center;
+    background: #0f1115; color: #e6e9ef;
+    font: 15px/1.6 ui-sans-serif, -apple-system, system-ui, sans-serif;
+    text-align: center; padding: 2rem;
+  }
+  .box { max-width: 460px; }
+  h1 { font-size: 1.2rem; margin: 0 0 .75rem; }
+  p { color: #949cad; margin: .4rem 0; }
+  code {
+    display: inline-block; margin-top: .8rem; padding: .45rem .7rem;
+    background: #171a21; border: 1px solid #262b36; border-radius: 7px;
+    color: #e0af68; font-size: .85rem;
+  }
+</style>
+</head>
+<body>
+  <div class="box">
+    <h1>The voice server did not start</h1>
+    <p>
+      This window shows when the app could not reach the local server on
+      port 8823 within 90 seconds.
+    </p>
+    <p>
+      It needs the project checkout and <strong>uv</strong> on your PATH.
+      Start the server yourself and reopen the app:
+    </p>
+    <code>cd ~/Desktop/self/voice &amp;&amp; uv run voice-web</code>
+    <p style="margin-top:1.2rem; font-size:.82rem">
+      Nothing is sent anywhere — the app only ever talks to 127.0.0.1.
+    </p>
+  </div>
+</body>
+</html>

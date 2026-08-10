@@ -1,0 +1,20 @@
+[package]
+name = "voiceagent-desktop"
+version = "0.1.0"
+description = "Local Voice Agent"
+edition = "2021"
+rust-version = "1.77"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+
+[profile.release]
+# The bundle is shipped, not debugged, so optimise for size.
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

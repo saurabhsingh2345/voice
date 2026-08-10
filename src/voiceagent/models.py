@@ -249,10 +249,14 @@ MAX_LICENSE_ID_CHARS = 80
 #: Packages whose non-permissive license we have consciously accepted, with why.
 ACCEPTED_EXCEPTIONS: dict[str, str] = {
     "num2words": (
-        "LGPL-2.1. Imported unmodified by misaki for number-to-words in the "
-        "TTS frontend. LGPL permits commercial use of an unmodified library, "
-        "but it is outside the Apache/MIT/BSD rule and needs a decision before "
-        "Phase 8 packaging."
+        "LGPL-2.1. ACCEPTED, knowingly. Imported unmodified by misaki to turn "
+        "digits into words for Kokoro. The LGPL permits commercial use of an "
+        "unmodified library, so this does not restrict the product -- but it "
+        "carries one obligation the Apache/MIT/BSD set does not: recipients "
+        "must be able to replace the library with their own version. Shipping "
+        "it as an ordinary importable Python package in site-packages "
+        "satisfies that; freezing it into a single opaque binary would not. "
+        "Revisit if the Tauri build ever bundles Python into one archive."
     ),
 }
 

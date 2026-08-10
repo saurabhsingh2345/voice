@@ -118,9 +118,15 @@ everyday speech all resolve cleanly. Only bare symbols (`$`) and raw filenames
 symbols out. `KokoroEngine.check_coverage(text)` reports gaps for any string.
 
 `voice-doctor` now audits every installed package's license, not just the models,
-since copyleft arrives through the dependency tree. One accepted exception is
-recorded: `num2words` (LGPL-2.1), used unmodified by misaki — **needs a decision
-before Phase 8 packaging.**
+since copyleft arrives through the dependency tree.
+
+**One accepted exception: `num2words` (LGPL-2.1).** Used unmodified by misaki to
+turn digits into words. LGPL permits commercial use of an unmodified library, so
+it does not restrict the product — but it carries an obligation the
+Apache/MIT/BSD set does not: **recipients must be able to swap in their own
+build of the library.** Shipping it as an ordinary importable package in
+`site-packages` satisfies that. Freezing Python into one opaque binary would
+not, so the desktop build must keep the dependency replaceable.
 
 ## Phase 4 — the live voice loop
 
