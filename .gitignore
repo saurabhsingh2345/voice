@@ -1,0 +1,22 @@
+.venv/
+__pycache__/
+*.py[cod]
+.uv/
+uv.lock.bak
+
+# Model weights are large and re-downloadable; never commit them.
+models/
+*.safetensors
+*.gguf
+*.onnx
+
+# Privacy: local user data must never leave this machine.
+data/
+*.db
+*.sqlite
+*.sqlite3
+recordings/
+voice_profiles/
+
+.DS_Store
+.env

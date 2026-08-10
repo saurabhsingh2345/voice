@@ -1,0 +1,48 @@
+[project]
+name = "voiceagent"
+version = "0.0.1"
+description = "Local-first, privacy-preserving voice AI agent for Apple Silicon"
+requires-python = ">=3.12,<3.13"
+license = { text = "Apache-2.0" }
+
+# Phase 0 dependencies ONLY.
+# Models (STT/LLM/TTS) are deliberately NOT installed yet -- each phase adds its own
+# extra so we can measure the incremental memory cost of every component.
+dependencies = [
+    "mlx>=0.32",  # Phase 0 must prove Metal/MLX works before any model is chosen.
+    "numpy>=2.0",  # the audio type shared across the stt/tts module boundaries
+    "psutil>=6.0",
+    "rich>=13.7",
+]
+
+[project.optional-dependencies]
+# Phase 1 (STT) -- not installed yet, listed so the roadmap is legible.
+stt = [
+    "mlx>=0.32",
+    "mlx-whisper>=0.4",
+    "moonshine-voice>=0.1",
+]
+# Phase 2 (LLM)
+llm = [
+    "mlx>=0.32",
+    "mlx-lm>=0.28",
+]
+# Phase 3 (TTS)
+tts = [
+    "mlx>=0.32",
+    "mlx-audio>=0.2",
+]
+
+[project.scripts]
+voice-doctor = "voiceagent.diagnostics.doctor:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/voiceagent"]
+
+[tool.uv]
+# Keep the venv reproducible and local to the project.
+managed = true
