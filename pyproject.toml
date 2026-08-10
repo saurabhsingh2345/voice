@@ -19,8 +19,13 @@ dependencies = [
 # Phase 1 (STT) -- not installed yet, listed so the roadmap is legible.
 stt = [
     "mlx>=0.32",
-    "mlx-whisper>=0.4",
-    "moonshine-voice>=0.1",
+    "mlx-whisper>=0.4.3",
+    # mlx-whisper pulls numba; without a floor uv backtracks to numba 0.53
+    # (Python <3.10 only) because modern numba caps numpy below our floor.
+    "numba>=0.61",
+    "moonshine-voice>=0.1.1",
+    "sounddevice>=0.5",  # live mic capture (PortAudio bindings, MIT)
+    "soundfile>=0.12",   # wav I/O for the benchmark fixtures (BSD-3-Clause)
 ]
 # Phase 2 (LLM)
 llm = [

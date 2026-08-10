@@ -92,15 +92,21 @@ REGISTRY: tuple[ModelSpec, ...] = (
         notes="~2 MB ONNX model; overhead is the audio ring buffer.",
     ),
     ModelSpec(
-        name="Moonshine Base",
+        name="Moonshine (English)",
         stage=Stage.STT,
         license="MIT",
-        repo="usefulsensors/moonshine",
+        repo="moonshine-voice",
         weights_gb=0.13,
         runtime_overhead_gb=0.15,
         phase=1,
         default=False,
-        notes="Phase 1 benchmark candidate A. Built for streaming/low latency.",
+        notes=(
+            "Phase 1 benchmark candidate A. Built for streaming/low latency. "
+            "CAUTION: only the code and the ENGLISH models are MIT. Non-English "
+            "models ship under the 'Moonshine Community License' and are NOT "
+            "cleared by this project's allow-list -- revisit before adding any "
+            "other language."
+        ),
     ),
     ModelSpec(
         name="Whisper Large-v3-Turbo (MLX, 4-bit)",
