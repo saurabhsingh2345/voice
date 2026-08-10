@@ -227,15 +227,13 @@ async def update_voice(profile_id: str, reference_text: str = Form(...)) -> dict
 
 @app.post("/api/voices/{profile_id}/transcribe")
 async def transcribe_reference(profile_id: str) -> dict:
-    """Transcribe the reference clip so the transcript actually matches it.
+    """Transcribe the reference clip in whatever language it is spoken.
 
-    A hand-typed transcript that under-describes its audio makes F5 massively
-    over-estimate the output length -- a 4-second sentence came out as 25
-    seconds. Transcribing the exact audio the model will hear removes that
-    whole class of mistake.
-
-    Moonshine is English-only, so this is a convenience for English reference
-    clips; a Hindi clip still needs its Devanagari typed in by hand.
+    This uses Whisper rather than Moonshine. Moonshine is English-only and does
+    not fail on Hindi -- it invents English words that sound similar, and F5
+    conditions on that text, so the synthesis came out as babble. Whisper
+    detects the language and returns Devanagari for Hindi, which is what the
+    Indic model actually needs.
     """
     import io as _io
 
@@ -251,28 +249,42 @@ async def transcribe_reference(profile_id: str) -> dict:
 
     from voiceagent.tts.indic_engine import REFERENCE_CLIP_SECONDS
 
+    # Transcribe exactly the span the TTS will condition on, so the text and the
+    # audio describe the same thing.
     audio = audio[: int(REFERENCE_CLIP_SECONDS * sr)]
 
-    # Moonshine wants 16 kHz; resample by decimation rather than pulling in a
-    # resampling dependency for a one-off convenience path.
     target = 16_000
     if sr != target:
         idx = (np.arange(int(len(audio) * target / sr)) * sr / target).astype(int)
         audio = audio[idx[idx < len(audio)]]
 
-    from voiceagent.stt.moonshine_engine import MoonshineEngine
+    def _run() -> dict:
+        import mlx_whisper
 
-    stt = MoonshineEngine()
+        return mlx_whisper.transcribe(
+            audio,
+            path_or_hf_repo="mlx-community/whisper-large-v3-turbo",
+            fp16=True,
+            verbose=None,
+        )
+
     try:
-        await asyncio.to_thread(stt.load)
-        result = await asyncio.to_thread(stt.transcribe, audio)
-    finally:
-        stt.unload()
+        result = await asyncio.to_thread(_run)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, f"transcription failed: {exc}") from exc
 
-    profile = store.set_reference_text(profile_id, result.text)
+    text = (result.get("text") or "").strip()
+    if not text:
+        raise HTTPException(422, "nothing intelligible was found in this clip")
+
+    profile = store.set_reference_text(profile_id, text)
     if _indic_engine is not None:
         _indic_engine.forget_reference(profile_id)
-    return {"profile_id": profile_id, "reference_text": profile.reference_text}
+    return {
+        "profile_id": profile_id,
+        "reference_text": profile.reference_text,
+        "language": result.get("language", "?"),
+    }
 
 
 @app.delete("/api/voices/{profile_id}")

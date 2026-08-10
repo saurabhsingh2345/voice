@@ -333,7 +333,7 @@ async function refreshVoices() {
     // way to get wildly wrong output length, so offer to do it from the audio.
     const auto = document.createElement("button");
     auto.textContent = "Auto-transcribe";
-    auto.title = "English clips only — will invent words for Hindi audio";
+    auto.title = "Transcribe with local Whisper — detects Hindi and English";
     auto.onclick = async () => {
       auto.disabled = true; auto.textContent = "Transcribing…";
       const res = await fetch(`/api/voices/${v.profile_id}/transcribe`, { method: "POST" });
