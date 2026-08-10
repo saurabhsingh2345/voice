@@ -48,6 +48,43 @@ uv run python -m voiceagent.stt.live                          # live mic
 uv run python -m voiceagent.stt.live --file fixtures/medium.wav   # replay a WAV
 ```
 
+## Phase 2 results — LLM
+
+Qwen3-4B-Instruct-2507, 4-bit MLX. Load 5.3 s, **2.16 GiB** peak.
+
+Time-to-first-token is what gates the voice loop, and it is dominated by prompt
+processing, not generation:
+
+| Prompt | Tokens | TTFT |
+| --- | --- | --- |
+| bare | 35 | 185 ms |
+| + tool schemas | 234 | 505 ms |
+| + 12-msg history | 209 | 465 ms |
+| + both | 408 | 703 ms |
+
+One dummy tool costs ~200 prompt tokens and ~300 ms. Since the system prompt and
+tool schemas never change between turns, the engine reuses their KV cache:
+
+| Turn | No cache | Prefix cache |
+| --- | --- | --- |
+| 1 | 491 ms | 523 ms |
+| 2 | 469 ms | **165 ms** |
+| 3 | 540 ms | **191 ms** |
+| 4 | 603 ms | **146 ms** |
+
+Uncached TTFT *grows* with the conversation; cached stays flat. That is the
+difference between a loop that stays responsive and one that degrades as you
+talk to it.
+
+Reproduce:
+
+```bash
+uv run python -m voiceagent.llm.agent          # scripted demo incl. tool call
+uv run python -m voiceagent.llm.agent --chat   # interactive
+uv run python -m voiceagent.llm.benchmark      # latency tables above
+uv run python -m pytest tests/ -q              # 92 tool-parser tests
+```
+
 ## Layout
 
 | Path | Role |
@@ -66,7 +103,7 @@ uv run python -m voiceagent.stt.live --file fixtures/medium.wav   # replay a WAV
 
 - [x] **Phase 0** — environment and memory audit
 - [x] **Phase 1** — STT standalone (Moonshine small-streaming chosen)
-- [ ] Phase 2 — LLM brain standalone
+- [x] **Phase 2** — LLM brain standalone (Qwen3-4B 4-bit, tool calling, prefix cache)
 - [ ] Phase 3 — TTS standalone
 - [ ] Phase 4 — full voice loop (Pipecat)
 - [ ] Phase 5 — tool layer

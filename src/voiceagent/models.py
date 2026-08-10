@@ -157,11 +157,18 @@ REGISTRY: tuple[ModelSpec, ...] = (
         stage=Stage.LLM,
         license="Apache-2.0",
         repo="mlx-community/Qwen3-4B-Instruct-2507-4bit",
-        weights_gb=2.30,
+        weights_gb=2.16,
         runtime_overhead_gb=1.15,
         phase=2,
         default=True,
-        notes="Overhead is the KV cache at an 8k context. Halve it at 4k.",
+        measured=True,
+        notes=(
+            "Weights measured at 2.16 GiB MLX peak, load 5.3s. Runtime figure "
+            "is the computed KV-cache worst case at an 8k context "
+            "(36 layers x 8 KV heads x 128 dim x 2 x fp16 ~= 147 KiB/token); "
+            "halve it at 4k. TTFT 185 ms with a bare prompt, ~500 ms once tool "
+            "schemas are attached, ~150 ms on later turns with prefix caching."
+        ),
     ),
     ModelSpec(
         name="Kokoro-82M",

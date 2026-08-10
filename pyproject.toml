@@ -51,3 +51,8 @@ packages = ["src/voiceagent"]
 [tool.uv]
 # Keep the venv reproducible and local to the project.
 managed = true
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
