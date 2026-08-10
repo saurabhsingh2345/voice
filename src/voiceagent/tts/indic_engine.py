@@ -66,6 +66,7 @@ class IndicTTSEngine(TTSEngine):
         reference_audio: np.ndarray | None = None,
         reference_text: str = "",
         reference_sample_rate: int = 24_000,
+        speed: float = 1.0,
     ) -> None:
         self.repo = repo
         #: IndicF5 is a cloning model: it needs a reference clip plus that
@@ -73,41 +74,102 @@ class IndicTTSEngine(TTSEngine):
         self.reference_audio = reference_audio
         self.reference_text = reference_text
         self.reference_sample_rate = reference_sample_rate
+        self.speed = speed
         self._model = None
+        self._vocoder = None
+        self._device = "cpu"
+        self._output_sample_rate = SAMPLE_RATE
         self._peak_bytes = 0
         self._cancelled = False
 
     # --- lifecycle --------------------------------------------------------
 
     def load(self) -> None:
+        """Construct the model directly rather than through from_pretrained.
+
+        `AutoModel.from_pretrained` cannot load this model on transformers 5.x.
+        v5 runs a model's `__init__` inside a meta-device context so weights can
+        be materialized lazily, but IndicF5's `__init__` eagerly builds a
+        torchaudio vocoder, which allocates real CPU tensors and blows up with
+        "Tensor on device cpu is not on the expected device meta!".
+
+        Downgrading transformers is not an option -- mlx-lm requires >=5.0.0 and
+        it runs the LLM. So the model class is instantiated the same way the
+        upstream module's own __main__ does it, outside any meta context, and
+        the checkpoint is loaded afterwards.
+        """
         import torch
-        from transformers import AutoModel
+        from huggingface_hub import hf_hub_download
+        from safetensors.torch import load_file
+
+        from f5_tts.infer import utils_infer as U
+        from f5_tts.model import CFM, DiT
+        from f5_tts.model.utils import get_tokenizer
 
         try:
-            self._model = AutoModel.from_pretrained(self.repo, trust_remote_code=True)
+            weights_path = hf_hub_download(self.repo, filename="model.safetensors")
+            vocab_path = hf_hub_download(self.repo, filename="checkpoints/vocab.txt")
         except Exception as exc:  # noqa: BLE001
             if "gated" in str(exc).lower() or "401" in str(exc):
                 raise IndicTTSAccessError(GATED_HELP.format(repo=self.repo)) from exc
             raise
 
-        # MPS first, since it is an order of magnitude faster than CPU here, but
-        # Parler/F5-style stacks have historically had gaps in the Metal
-        # backend. Fall back rather than crash.
+        # f5_tts defaults to mps and works there; the upstream IndicF5 wrapper
+        # hardcodes cuda-or-cpu, which is one more reason not to use it.
         self._device = "mps" if torch.backends.mps.is_available() else "cpu"
-        try:
-            self._model = self._model.to(self._device)
-        except Exception:  # noqa: BLE001
-            self._device = "cpu"
-            self._model = self._model.to("cpu")
 
-        self._peak_bytes = sum(
-            p.numel() * p.element_size() for p in self._model.parameters()
+        vocab_char_map, vocab_size = get_tokenizer(vocab_path, "custom")
+
+        # Architecture is fixed by the checkpoint; these are IndicF5's values.
+        model = CFM(
+            transformer=DiT(
+                dim=1024, depth=22, heads=16, ff_mult=2, text_dim=512, conv_layers=4,
+                text_num_embeds=vocab_size, mel_dim=U.n_mel_channels,
+            ),
+            mel_spec_kwargs=dict(
+                n_fft=U.n_fft,
+                hop_length=U.hop_length,
+                win_length=U.win_length,
+                n_mel_channels=U.n_mel_channels,
+                target_sample_rate=U.target_sample_rate,
+                mel_spec_type="vocos",
+            ),
+            odeint_kwargs=dict(method="euler"),
+            vocab_char_map=vocab_char_map,
+        ).to(self._device)
+
+        # The checkpoint was saved through an EMA wrapper around a compiled
+        # module, so every key carries an "ema_model._orig_mod." prefix that
+        # CFM does not have. Strip it rather than reconstructing their wrapper.
+        raw = load_file(weights_path, device="cpu")
+        state = {
+            key.removeprefix("ema_model._orig_mod."): value
+            for key, value in raw.items()
+            if key.startswith("ema_model._orig_mod.")
+        }
+        if not state:
+            raise RuntimeError(f"no ema_model weights found in {weights_path}")
+
+        missing, _ = model.load_state_dict(state, strict=False)
+        real_missing = [k for k in missing if not k.startswith("mel_spec.")]
+        if real_missing:
+            raise RuntimeError(
+                f"checkpoint does not match the model: {len(real_missing)} missing keys, "
+                f"e.g. {real_missing[:3]}"
+            )
+
+        model.eval()
+        self._model = model
+        self._vocoder = U.load_vocoder(
+            vocoder_name="vocos", is_local=False, device=self._device
         )
+        self._peak_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
 
     def unload(self) -> None:
         import gc
 
         self._model = None
+        self._vocoder = None
         gc.collect()
         try:
             import torch
@@ -138,28 +200,39 @@ class IndicTTSEngine(TTSEngine):
     # --- inference --------------------------------------------------------
 
     def _generate_blocking(self, text: str) -> np.ndarray:
-        import soundfile as sf
         import tempfile
         from pathlib import Path
 
+        import soundfile as sf
+        from f5_tts.infer.utils_infer import infer_process, preprocess_ref_audio_text
+
         self._require_reference()
 
-        # The model's remote code takes a reference *path*, so the decrypted
-        # clip is written to a temp file that is deleted immediately after.
+        # f5_tts wants a reference *path*, so the (decrypted) clip is written to
+        # a temp file that is removed as soon as inference returns -- the
+        # plaintext never lands anywhere persistent.
         with tempfile.TemporaryDirectory() as tmp:
             ref_path = Path(tmp) / "ref.wav"
             sf.write(ref_path, self.reference_audio, self.reference_sample_rate)
-            audio = self._model(
+            ref_audio, ref_text = preprocess_ref_audio_text(
+                str(ref_path), self.reference_text
+            )
+            audio, sample_rate, _ = infer_process(
+                ref_audio,
+                ref_text,
                 text,
-                ref_audio_path=str(ref_path),
-                ref_text=self.reference_text,
+                self._model,
+                self._vocoder,
+                mel_spec_type="vocos",
+                speed=self.speed,
+                device=self._device,
             )
 
         audio = np.asarray(audio, dtype=np.float32).reshape(-1)
-        # IndicF5 returns int16-scaled float in some versions.
         peak = float(np.abs(audio).max()) if audio.size else 0.0
-        if peak > 1.5:
+        if peak > 1.5:  # some paths return int16-scaled floats
             audio = audio / 32768.0
+        self._output_sample_rate = sample_rate
         return audio
 
     async def synthesize(self, text: str, voice: str | None = None) -> AsyncIterator[AudioChunk]:
