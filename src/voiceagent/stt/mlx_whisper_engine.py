@@ -63,13 +63,14 @@ class MLXWhisperEngine(STTEngine):
 
         import mlx.core as mx
 
-        # mlx-whisper memoizes the loaded model on the module; drop it so a
-        # rival engine can be measured without this model still resident.
-        import mlx_whisper.transcribe as _t
+        # mlx-whisper keeps the model on a class-level ModelHolder, so it stays
+        # resident until we clear it. Note `mlx_whisper.transcribe` the
+        # attribute is the *function*; the submodule of the same name has to be
+        # reached through the import system.
+        from mlx_whisper.transcribe import ModelHolder
 
-        cache = getattr(_t.load_model, "cache_clear", None)
-        if cache is not None:
-            cache()
+        ModelHolder.model = None
+        ModelHolder.model_path = None
         gc.collect()
         mx.clear_cache()
         self._loaded = False

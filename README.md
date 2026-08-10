@@ -23,6 +23,31 @@ uv run voice-doctor
 `voice-doctor` reports RAM, Metal/MLX status, the license audit, and the memory
 budget table. It exits non-zero if any constraint is violated.
 
+## Phase 1 results — STT
+
+Measured on M3 Pro / 18 GiB, 4 synthetic fixtures (1.4–14 s), median of 3 runs.
+RTF = compute time ÷ audio duration; lower is better.
+
+| Engine | Load | Model mem | Median RTF | Notes |
+| --- | --- | --- | --- | --- |
+| moonshine tiny-streaming | 9.8 s | 131 MiB | 0.063 | fastest, weakest accuracy |
+| **moonshine small-streaming** | 15.8 s | 228 MiB | 0.120 | **chosen** |
+| moonshine medium-streaming | 15.7 s | 481 MiB | 0.131 | best Moonshine accuracy |
+| mlx-whisper large-v3-turbo | 4.6 s | 2362 MiB | 0.104 | most accurate, 10× memory, pulls torch |
+
+Moonshine won the live-loop slot: it streams natively (Whisper has a fixed 30 s
+window, so its "streaming" is a re-decode of a growing buffer), it costs ~10× less
+memory, and it avoids a torch dependency. Whisper stays available for batch work
+where accuracy matters more than latency.
+
+Reproduce:
+
+```bash
+uv run python -m voiceagent.stt.benchmark                     # all four engines
+uv run python -m voiceagent.stt.live                          # live mic
+uv run python -m voiceagent.stt.live --file fixtures/medium.wav   # replay a WAV
+```
+
 ## Layout
 
 | Path | Role |
@@ -40,7 +65,7 @@ budget table. It exits non-zero if any constraint is violated.
 ## Phase status
 
 - [x] **Phase 0** — environment and memory audit
-- [ ] Phase 1 — STT standalone
+- [x] **Phase 1** — STT standalone (Moonshine small-streaming chosen)
 - [ ] Phase 2 — LLM brain standalone
 - [ ] Phase 3 — TTS standalone
 - [ ] Phase 4 — full voice loop (Pipecat)

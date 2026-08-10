@@ -92,32 +92,65 @@ REGISTRY: tuple[ModelSpec, ...] = (
         notes="~2 MB ONNX model; overhead is the audio ring buffer.",
     ),
     ModelSpec(
-        name="Moonshine (English)",
+        name="Moonshine tiny-streaming (en)",
         stage=Stage.STT,
         license="MIT",
-        repo="moonshine-voice",
-        weights_gb=0.13,
-        runtime_overhead_gb=0.15,
+        repo="moonshine-voice:TINY_STREAMING",
+        weights_gb=0.128,
+        runtime_overhead_gb=0.01,
         phase=1,
         default=False,
+        measured=True,
+        notes="Measured 131 MiB, median RTF 0.063, load 9.8s. Fastest and smallest, weakest accuracy.",
+    ),
+    ModelSpec(
+        name="Moonshine small-streaming (en)",
+        stage=Stage.STT,
+        license="MIT",
+        repo="moonshine-voice:SMALL_STREAMING",
+        weights_gb=0.223,
+        runtime_overhead_gb=0.34,
+        phase=1,
+        default=True,
+        measured=True,
         notes=(
-            "Phase 1 benchmark candidate A. Built for streaming/low latency. "
+            "CHOSEN. Measured 228 MiB weights, median RTF 0.120, load 15.8s; "
+            "process RSS during streaming settles near 570 MiB including the "
+            "ONNX runtime. Native streaming, no torch dependency. "
             "CAUTION: only the code and the ENGLISH models are MIT. Non-English "
             "models ship under the 'Moonshine Community License' and are NOT "
-            "cleared by this project's allow-list -- revisit before adding any "
-            "other language."
+            "cleared by this project's allow-list."
         ),
     ),
     ModelSpec(
-        name="Whisper Large-v3-Turbo (MLX, 4-bit)",
+        name="Moonshine medium-streaming (en)",
         stage=Stage.STT,
         license="MIT",
-        repo="mlx-community/whisper-large-v3-turbo-4bit",
-        weights_gb=0.80,
-        runtime_overhead_gb=0.35,
+        repo="moonshine-voice:MEDIUM_STREAMING",
+        weights_gb=0.470,
+        runtime_overhead_gb=0.10,
         phase=1,
-        default=True,
-        notes="Phase 1 benchmark candidate B. Higher accuracy, larger footprint.",
+        default=False,
+        measured=True,
+        notes="Measured 481 MiB, median RTF 0.131. Best Moonshine accuracy; upgrade path if small proves weak.",
+    ),
+    ModelSpec(
+        name="Whisper Large-v3-Turbo (MLX, fp16)",
+        stage=Stage.STT,
+        license="MIT",
+        repo="mlx-community/whisper-large-v3-turbo",
+        weights_gb=2.31,
+        runtime_overhead_gb=0.0,
+        phase=1,
+        default=False,
+        measured=True,
+        notes=(
+            "Measured 2362 MiB MLX peak, median RTF 0.104, load 4.6s. Most "
+            "accurate by a clear margin, but 10x Moonshine's memory, no true "
+            "streaming (re-decodes a growing buffer), and it pulls the entire "
+            "torch stack in as a dependency. Kept as an opt-in high-accuracy "
+            "batch backend, not the live-loop default."
+        ),
     ),
     ModelSpec(
         name="Qwen3-4B-Instruct-2507 (MLX, 4-bit)",

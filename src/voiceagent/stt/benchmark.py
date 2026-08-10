@@ -76,21 +76,23 @@ def _load_audio(path) -> tuple[np.ndarray, float]:
 
 
 def bench_engine(engine: STTEngine, items: list[fx.Fixture]) -> EngineResult:
+    label = getattr(engine, "label", engine.name)
     proc = psutil.Process()
     gc.collect()
     rss_before = proc.memory_info().rss
 
-    console.print(f"[dim]loading {engine.name}...[/]")
+    console.print(f"[dim]loading {label}...[/]")
     started = time.perf_counter()
     try:
         engine.load()
     except Exception as exc:  # noqa: BLE001 -- report, do not abort the whole run
-        return EngineResult(engine.name, 0.0, 0.0, 0.0, error=str(exc))
+        console.print(f"  [red]load failed:[/] {exc}")
+        return EngineResult(label, 0.0, 0.0, 0.0, error=str(exc))
     load_s = time.perf_counter() - started
 
     rss_after = proc.memory_info().rss
     result = EngineResult(
-        name=engine.name,
+        name=label,
         load_s=load_s,
         resident_mib=engine.resident_bytes / MIB,
         rss_delta_mib=(rss_after - rss_before) / MIB,
@@ -100,9 +102,15 @@ def bench_engine(engine: STTEngine, items: list[fx.Fixture]) -> EngineResult:
         audio, duration = _load_audio(item.path)
         fr = FixtureResult(slug=item.slug, duration_s=duration)
         for _ in range(REPEATS):
-            out = engine.transcribe(audio)
+            try:
+                out = engine.transcribe(audio)
+            except Exception as exc:  # noqa: BLE001
+                console.print(f"  [red]{item.slug} failed:[/] {exc}")
+                break
             fr.latencies_ms.append(out.latency_ms or 0.0)
             fr.text = out.text
+        if not fr.latencies_ms:
+            continue
         result.fixtures.append(fr)
         console.print(
             f"  [dim]{item.slug:10s} {duration:4.1f}s audio -> "
@@ -174,10 +182,14 @@ def main() -> int:
     items = fx.generate()
     console.print(f"[dim]{len(items)} fixtures in {fx.FIXTURE_DIR}[/]\n")
 
-    results = [
-        bench_engine(MoonshineEngine(), items),
-        bench_engine(MLXWhisperEngine(), items),
+    # All three streaming Moonshine sizes published for English, plus Whisper.
+    candidates: list[STTEngine] = [
+        MoonshineEngine(arch="TINY_STREAMING"),
+        MoonshineEngine(arch="SMALL_STREAMING"),
+        MoonshineEngine(arch="MEDIUM_STREAMING"),
+        MLXWhisperEngine(),
     ]
+    results = [bench_engine(engine, items) for engine in candidates]
     console.print()
     report(results, items)
     return 0

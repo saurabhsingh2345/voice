@@ -60,6 +60,34 @@ async def mic_chunks(stop: asyncio.Event) -> AsyncIterator[np.ndarray]:
                 continue
 
 
+async def file_chunks(path: str, realtime: bool = True) -> AsyncIterator[np.ndarray]:
+    """Replay a WAV through the same streaming path as the mic.
+
+    Lets the streaming plumbing be verified without a human talking, which is
+    also how we regression-test it later.
+    """
+    import soundfile as sf
+
+    audio, sr = sf.read(path, dtype="float32")
+    if sr != SAMPLE_RATE:
+        raise SystemExit(f"{path} is {sr} Hz, expected {SAMPLE_RATE} Hz")
+    if audio.ndim > 1:
+        audio = audio.mean(axis=1)
+
+    # A live mic keeps delivering silence after speech stops, which is what
+    # tells a streaming model the utterance ended. A raw file just stops, so
+    # the last word gets truncated -- pad to reproduce mic behaviour.
+    trailing_silence = np.zeros(int(0.6 * SAMPLE_RATE), dtype=np.float32)
+    audio = np.concatenate([audio, trailing_silence])
+
+    console.print(f"[green]Replaying[/] {path} ({len(audio) / sr:.1f}s)\n")
+    for start in range(0, len(audio), BLOCK_SAMPLES):
+        yield audio[start : start + BLOCK_SAMPLES]
+        if realtime:
+            # Pace it like a live mic so interim timing is representative.
+            await asyncio.sleep(BLOCK_SAMPLES / SAMPLE_RATE)
+
+
 def build_engine(name: str) -> STTEngine:
     if name == "moonshine":
         from voiceagent.stt.moonshine_engine import MoonshineEngine
@@ -72,7 +100,7 @@ def build_engine(name: str) -> STTEngine:
     raise SystemExit(f"unknown engine {name!r}")
 
 
-async def run(engine_name: str) -> None:
+async def run(engine_name: str, replay: str | None = None) -> None:
     engine = build_engine(engine_name)
 
     console.print(f"[dim]loading {engine.name}...[/]")
@@ -85,8 +113,9 @@ async def run(engine_name: str) -> None:
 
     stop = asyncio.Event()
     finals = 0
+    source = file_chunks(replay) if replay else mic_chunks(stop)
     try:
-        async for transcript in engine.stream(mic_chunks(stop)):
+        async for transcript in engine.stream(source):
             if not transcript.text:
                 continue
             if transcript.is_final:
@@ -121,6 +150,10 @@ def main() -> int:
     parser.add_argument(
         "--list-devices", action="store_true", help="print audio devices and exit"
     )
+    parser.add_argument(
+        "--file",
+        help="replay a 16 kHz WAV through the streaming path instead of the mic",
+    )
     args = parser.parse_args()
 
     if args.list_devices:
@@ -128,7 +161,7 @@ def main() -> int:
         return 0
 
     try:
-        asyncio.run(run(args.engine))
+        asyncio.run(run(args.engine, replay=args.file))
     except KeyboardInterrupt:
         pass
     return 0

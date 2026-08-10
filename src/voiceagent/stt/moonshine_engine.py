@@ -23,12 +23,22 @@ from voiceagent.stt.base import SAMPLE_RATE, STTEngine, Transcript
 class MoonshineEngine(STTEngine):
     name = "moonshine"
 
+    @property
+    def label(self) -> str:
+        return f"moonshine:{self.arch_name.lower()}"
+
+    #: Architectures actually published for English. Note there is no
+    #: BASE_STREAMING for English -- BASE is batch-only.
+    ENGLISH_ARCHS = ("TINY", "TINY_STREAMING", "BASE", "SMALL_STREAMING", "MEDIUM_STREAMING")
+
     def __init__(
         self,
-        arch: str = "BASE_STREAMING",
+        arch: str = "SMALL_STREAMING",
         language: str = "en",
         update_interval: float = 0.3,
     ) -> None:
+        if arch not in self.ENGLISH_ARCHS:
+            raise ValueError(f"{arch!r} is not published for English; pick one of {self.ENGLISH_ARCHS}")
         self.arch_name = arch
         self.language = language
         self.update_interval = update_interval
@@ -99,14 +109,30 @@ class MoonshineEngine(STTEngine):
 
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[Transcript | None] = asyncio.Queue()
+        # Moonshine re-emits a line on every update tick even when the text is
+        # unchanged; track the last text per line so we only surface real edits.
+        last_text: dict[int, str] = {}
+        # stop() re-emits already-complete lines, so a line must only ever be
+        # finalized once.
+        finalized: set[int] = set()
 
         def on_event(event) -> None:
             line = event.line
+            text = line.text.strip()
+
+            if line.is_complete:
+                if line.line_id in finalized:
+                    return
+                finalized.add(line.line_id)
+            elif last_text.get(line.line_id) == text:
+                return
+            last_text[line.line_id] = text
+
             # Called from Moonshine's own thread -- hop back to the event loop.
             loop.call_soon_threadsafe(
                 queue.put_nowait,
                 Transcript(
-                    text=line.text.strip(),
+                    text=text,
                     is_final=line.is_complete,
                     latency_ms=float(line.last_transcription_latency_ms),
                 ),
