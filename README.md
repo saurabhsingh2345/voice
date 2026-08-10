@@ -309,6 +309,34 @@ comfortable for type-and-listen but is **not** fast enough for the real-time
 conversational loop. Kokoro (RTF ~0.1) remains the agent's live voice; cloning
 is for composed playback.
 
+## Phase 8 — desktop app
+
+```bash
+cd desktop/src-tauri && cargo tauri build
+open "target/release/bundle/macos/Local Voice Agent.app"
+```
+
+2.9 MB arm64 bundle, starts the server in ~6 s, opens the UI in a native window.
+Quitting reaps the server and frees the port — verified.
+
+**It is a launcher, not a distributable bundle.** It still needs the project
+checkout and its `.venv`. Embedding a Python runtime is separate work, and is
+constrained by the LGPL obligation above: `num2words` must remain replaceable,
+so Python cannot simply be frozen into one opaque archive.
+
+Two bugs surfaced only when double-clicking the app, which no terminal test
+would have caught:
+
+- A GUI-launched app inherits a **minimal PATH** (`/usr/bin:/bin:/usr/sbin:/sbin`),
+  so `uv` at `/opt/homebrew/bin` was not found. It now runs `.venv/bin/voice-web`
+  directly, falling back to `uv` by absolute path.
+- The server **outlived the app** and kept port 8823 bound: on macOS the window
+  can be destroyed before the app-level exit event runs. The child is now reaped
+  from both events.
+
+Server output goes to `data/server.log` — silencing it had made a failed launch
+look identical to a slow one.
+
 ## Layout
 
 | Path | Role |
@@ -334,11 +362,7 @@ is for composed playback.
 - [x] **Phase 6** — encrypted history + memory (not SQLCipher, see below)
 - [x] **Phase 7** — voice cloning, consent-gated (Chatterbox Turbo) *(brought forward)*
 - [x] **Web UI** — enrol a voice, type text, hear it *(Tauri shell still pending)*
-- [ ] Phase 4 — full voice loop (Pipecat)
-- [ ] Phase 5 — tool layer
-- [ ] Phase 6 — local memory and storage
-- [ ] Phase 7 — voice cloning (optional, consent-gated)
-- [ ] Phase 8 — Tauri packaging
+- [x] **Phase 8** — Tauri `.app` bundle (launcher, not yet self-contained)
 
 ## Rejected models
 
