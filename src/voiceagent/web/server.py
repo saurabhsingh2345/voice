@@ -22,6 +22,8 @@ import soundfile as sf
 from fastapi import FastAPI, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
+from voiceagent.text.detect import detect
+from voiceagent.text.normalize_hi import normalize as normalize_hi
 from voiceagent.voice_clone.engine import SAMPLE_RATE, ChatterboxCloneEngine
 from voiceagent.voice_clone.store import (
     CONSENT_PHRASE,
@@ -36,6 +38,14 @@ app = FastAPI(title="Local Voice Agent")
 store = VoiceProfileStore()
 engine = ChatterboxCloneEngine(store=store)
 
+#: Chatterbox is English-only, so Devanagari sent to it produces nothing usable.
+#: Indic text goes to IndicF5, which clones from the same reference clip -- so
+#: one enrolment gives the user their voice in both languages. Only one of the
+#: two is held in memory at a time; together they would not fit alongside the
+#: rest of the pipeline.
+_indic_engine = None
+_indic_lock = asyncio.Lock()
+
 STATIC = Path(__file__).resolve().parent / "static"
 
 #: The model is loaded on first use, not at import, so the page opens instantly.
@@ -49,6 +59,21 @@ async def _ensure_loaded() -> None:
         if not _loaded:
             await asyncio.to_thread(engine.load)
             _loaded = True
+
+
+async def _ensure_indic() -> "object":
+    """Load IndicF5 on first Indic request, evicting Chatterbox to make room."""
+    global _indic_engine, _loaded
+    from voiceagent.tts.indic_engine import IndicTTSEngine
+
+    async with _indic_lock:
+        if _indic_engine is None:
+            if _loaded:
+                engine.unload()
+                _loaded = False
+            _indic_engine = IndicTTSEngine()
+            await asyncio.to_thread(_indic_engine.load)
+    return _indic_engine
 
 
 def _decode_upload(raw: bytes) -> tuple[np.ndarray, int, float]:
@@ -145,6 +170,7 @@ async def list_voices() -> list[dict]:
             "created_at": p.created_at,
             "duration_seconds": round(p.duration_seconds, 1),
             "consent_granted_at": p.consent.granted_at,
+            "reference_text": p.reference_text,
         }
         for p in store.list()
     ]
@@ -155,6 +181,7 @@ async def enrol(
     speaker_name: str = Form(...),
     consent_phrase: str = Form(...),
     clip: UploadFile = Form(...),
+    reference_text: str = Form(""),
 ) -> JSONResponse:
     """Enrol a voice. Rejected unless the consent phrase is typed exactly."""
     try:
@@ -169,7 +196,9 @@ async def enrol(
         duration = MAX_REFERENCE_SECONDS
 
     try:
-        profile = store.save(consent, _to_wav_bytes(audio, sr), duration, sr)
+        profile = store.save(
+            consent, _to_wav_bytes(audio, sr), duration, sr, reference_text=reference_text
+        )
     except (ValueError, ConsentError) as exc:
         raise HTTPException(400, str(exc)) from exc
 
@@ -180,6 +209,70 @@ async def enrol(
             "duration_seconds": round(duration, 1),
         }
     )
+
+
+@app.patch("/api/voices/{profile_id}")
+async def update_voice(profile_id: str, reference_text: str = Form(...)) -> dict:
+    """Attach or correct the reference transcript that Indic synthesis needs."""
+    try:
+        profile = store.set_reference_text(profile_id, reference_text)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    # The engine caches the decoded clip and its transcript; drop it so the new
+    # text is picked up on the next request.
+    if _indic_engine is not None:
+        _indic_engine.forget_reference(profile_id)
+    return {"profile_id": profile.profile_id, "reference_text": profile.reference_text}
+
+
+@app.post("/api/voices/{profile_id}/transcribe")
+async def transcribe_reference(profile_id: str) -> dict:
+    """Transcribe the reference clip so the transcript actually matches it.
+
+    A hand-typed transcript that under-describes its audio makes F5 massively
+    over-estimate the output length -- a 4-second sentence came out as 25
+    seconds. Transcribing the exact audio the model will hear removes that
+    whole class of mistake.
+
+    Moonshine is English-only, so this is a convenience for English reference
+    clips; a Hindi clip still needs its Devanagari typed in by hand.
+    """
+    import io as _io
+
+    import soundfile as _sf
+
+    profile = store.get(profile_id)
+    if profile is None:
+        raise HTTPException(404, "no such voice profile")
+
+    audio, sr = _sf.read(_io.BytesIO(store.reference_audio(profile_id)), dtype="float32")
+    if audio.ndim > 1:
+        audio = audio.mean(axis=1)
+
+    from voiceagent.tts.indic_engine import REFERENCE_CLIP_SECONDS
+
+    audio = audio[: int(REFERENCE_CLIP_SECONDS * sr)]
+
+    # Moonshine wants 16 kHz; resample by decimation rather than pulling in a
+    # resampling dependency for a one-off convenience path.
+    target = 16_000
+    if sr != target:
+        idx = (np.arange(int(len(audio) * target / sr)) * sr / target).astype(int)
+        audio = audio[idx[idx < len(audio)]]
+
+    from voiceagent.stt.moonshine_engine import MoonshineEngine
+
+    stt = MoonshineEngine()
+    try:
+        await asyncio.to_thread(stt.load)
+        result = await asyncio.to_thread(stt.transcribe, audio)
+    finally:
+        stt.unload()
+
+    profile = store.set_reference_text(profile_id, result.text)
+    if _indic_engine is not None:
+        _indic_engine.forget_reference(profile_id)
+    return {"profile_id": profile_id, "reference_text": profile.reference_text}
 
 
 @app.delete("/api/voices/{profile_id}")
@@ -217,13 +310,50 @@ async def speak(
             400, f"unsupported format {fmt!r}; choose one of {sorted(OUTPUT_FORMATS)}"
         )
 
-    await _ensure_loaded()
-
-    started = time.perf_counter()
+    # Route on script. Devanagari (and other Indic scripts) cannot be spoken by
+    # Chatterbox at all, so this is a correctness decision, not a preference.
+    detection = detect(text)
+    spoken = text.strip()
     parts: list[np.ndarray] = []
+    started = time.perf_counter()
+
     try:
-        async for chunk in engine.synthesize(text.strip(), voice=profile_id):
-            parts.append(chunk.samples)
+        if detection.is_indic:
+            profile = store.get(profile_id)
+            if profile is None:
+                raise HTTPException(403, "no such consented voice profile")
+            if not profile.reference_text:
+                raise HTTPException(
+                    400,
+                    "This voice has no reference transcript. IndicF5 needs to know "
+                    "what the reference clip says. Re-enrol the voice and fill in "
+                    "the transcript field, then try again.",
+                )
+
+            indic = await _ensure_indic()
+            import io as _io
+            import soundfile as _sf
+
+            ref_audio, ref_sr = _sf.read(
+                _io.BytesIO(store.reference_audio(profile_id)), dtype="float32"
+            )
+            if ref_audio.ndim > 1:
+                ref_audio = ref_audio.mean(axis=1)
+            indic.set_reference(ref_audio, profile.reference_text, ref_sr)
+
+            # Numbers and dates must become Hindi words before synthesis, or the
+            # model reads them in whatever language it defaults to.
+            spoken = normalize_hi(spoken)
+            started = time.perf_counter()
+            async for chunk in indic.synthesize(spoken):
+                parts.append(chunk.samples)
+        else:
+            await _ensure_loaded()
+            started = time.perf_counter()
+            async for chunk in engine.synthesize(spoken, voice=profile_id):
+                parts.append(chunk.samples)
+    except HTTPException:
+        raise
     except ConsentError as exc:
         raise HTTPException(403, str(exc)) from exc
 
@@ -244,6 +374,8 @@ async def speak(
             "X-Audio-Seconds": f"{seconds:.2f}",
             "X-Realtime-Factor": f"{(elapsed_ms / 1000) / seconds:.2f}" if seconds else "0",
             "X-Audio-Format": ext,
+            "X-Language": detection.language,
+            "X-Engine": "indicf5" if detection.is_indic else "chatterbox",
             "X-Audio-Bytes": str(len(payload)),
             "Content-Disposition": f'inline; filename="speech.{ext}"',
         },

@@ -75,6 +75,10 @@ class VoiceProfile:
     duration_seconds: float
     sample_rate: int
     consent: ConsentRecord
+    reference_text: str = ""
+    """What the speaker actually said. IndicF5 conditions on the reference
+    transcript as well as the audio, so Hindi synthesis needs it; Chatterbox
+    does not, which is why it is optional."""
 
     @property
     def dir(self) -> Path:
@@ -121,7 +125,7 @@ class VoiceProfileStore:
         self.root = root
 
     def save(self, consent: ConsentRecord, wav_bytes: bytes, duration_seconds: float,
-             sample_rate: int) -> VoiceProfile:
+             sample_rate: int, reference_text: str = "") -> VoiceProfile:
         """Persist a reference clip. Impossible to call without consent."""
         if not isinstance(consent, ConsentRecord):
             raise ConsentError("A valid ConsentRecord is required to store a voice.")
@@ -138,6 +142,7 @@ class VoiceProfileStore:
             duration_seconds=duration_seconds,
             sample_rate=sample_rate,
             consent=consent,
+            reference_text=reference_text.strip(),
         )
 
         target = self.root / profile.profile_id
@@ -160,6 +165,8 @@ class VoiceProfileStore:
             data = json.loads(meta.read_text())
             consent = ConsentRecord(**data.pop("consent"))
             data.pop("dir", None)
+            # Profiles enrolled before Hindi support have no transcript.
+            data.setdefault("reference_text", "")
             profiles.append(VoiceProfile(**data, consent=consent))
         return profiles
 
@@ -176,6 +183,24 @@ class VoiceProfileStore:
             raise KeyError(f"no such voice profile: {profile_id}")
         blob = (self.root / profile_id / "reference.wav.enc").read_bytes()
         return _fernet().decrypt(blob)
+
+    def set_reference_text(self, profile_id: str, reference_text: str) -> VoiceProfile:
+        """Attach a transcript to an existing profile.
+
+        Voices enrolled before Indic support have no transcript, and IndicF5
+        needs one. Re-recording a minute of audio just to add a line of text
+        would be a poor trade, so this edits the metadata in place. The audio
+        and the consent record are untouched.
+        """
+        profile = self.get(profile_id)
+        if profile is None:
+            raise KeyError(f"no such voice profile: {profile_id}")
+
+        meta = self.root / profile_id / "profile.json"
+        data = json.loads(meta.read_text())
+        data["reference_text"] = reference_text.strip()
+        meta.write_text(json.dumps(data, indent=2, default=str))
+        return self.get(profile_id)
 
     def delete(self, profile_id: str) -> bool:
         target = self.root / profile_id

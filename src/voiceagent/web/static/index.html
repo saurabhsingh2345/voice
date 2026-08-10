@@ -76,6 +76,14 @@
     <label for="consent">Type <code id="phrase">…</code> to confirm consent</label>
     <input id="consent" placeholder="Type the phrase exactly" autocomplete="off">
 
+    <label for="reftext">What will you say / did you say? <span class="muted">(needed for Hindi &amp; other Indic languages)</span></label>
+    <input id="reftext" placeholder="Type the exact words of your reference clip" autocomplete="off">
+    <p class="muted" style="margin:.35rem 0 0; font-size:.8rem">
+      For Hindi output, record the clip <strong>in Hindi</strong> and type the same
+      Devanagari here. The Indic model conditions on the transcript as well as the
+      audio; English-only clips give an English accent.
+    </p>
+
     <label>Reference clip <span class="muted">(<span id="minmax">…</span>, read anything aloud naturally)</span></label>
     <div class="row">
       <button id="rec">● Record</button>
@@ -274,6 +282,7 @@ $("enrol").onclick = async () => {
   fd.append("speaker_name", $("name").value);
   fd.append("consent_phrase", $("consent").value);
   fd.append("clip", clipBlob, "reference.wav");
+  fd.append("reference_text", $("reftext").value || "");
 
   $("enrol").disabled = true;
   setStatus($("enrolStatus"), "Encrypting and saving…");
@@ -300,8 +309,44 @@ async function refreshVoices() {
   voices.forEach(v => {
     const row = document.createElement("div");
     row.className = "voice";
+    const hasText = (v.reference_text || "").trim().length > 0;
     row.innerHTML = `<span><strong>${v.speaker_name}</strong>
-      <span class="muted">· ${v.duration_seconds}s · consented ${new Date(v.consent_granted_at).toLocaleString()}</span></span>`;
+      <span class="muted">· ${v.duration_seconds}s · ${hasText
+        ? "transcript set — Hindi ready"
+        : "<span style='color:var(--warn)'>no transcript — Hindi unavailable</span>"}</span></span>`;
+
+    // Voices enrolled before Indic support have no transcript, and re-recording
+    // a minute of audio to add one line of text would be a bad trade.
+    const fix = document.createElement("button");
+    fix.textContent = hasText ? "Edit transcript" : "Add transcript";
+
+    // Typing a transcript that does not match the audio is the single easiest
+    // way to get wildly wrong output length, so offer to do it from the audio.
+    const auto = document.createElement("button");
+    auto.textContent = "Auto-transcribe";
+    auto.title = "Transcribe the clip with local STT (English clips only)";
+    auto.onclick = async () => {
+      auto.disabled = true; auto.textContent = "Transcribing…";
+      const res = await fetch(`/api/voices/${v.profile_id}/transcribe`, { method: "POST" });
+      auto.disabled = false; auto.textContent = "Auto-transcribe";
+      if (!res.ok) { alert("Could not transcribe this clip."); return; }
+      refreshVoices();
+    };
+    row.appendChild(auto);
+    fix.onclick = async () => {
+      const said = prompt(
+        "Type exactly what is said in this reference clip.\n\n" +
+        "If the clip is English, Hindi will carry your timbre but an English accent. " +
+        "For native Hindi, re-record the clip in Hindi.",
+        v.reference_text || "");
+      if (said === null) return;
+      const fd = new FormData();
+      fd.append("reference_text", said);
+      await fetch("/api/voices/" + v.profile_id, { method: "PATCH", body: fd });
+      refreshVoices();
+    };
+    row.appendChild(fix);
+
     const del = document.createElement("button");
     del.className = "danger"; del.textContent = "Delete";
     del.onclick = async () => { await fetch("/api/voices/" + v.profile_id, { method: "DELETE" }); refreshVoices(); };
@@ -404,7 +449,10 @@ $("speak").onclick = async () => {
   fd.append("profile_id", $("voiceSel").value);
 
   $("speak").disabled = true;
-  setStatus($("speakStatus"), "Synthesizing… (first run loads the model, ~30s)");
+  const hindi = /[\u0900-\u097F]/.test($("text").value);
+  setStatus($("speakStatus"), hindi
+    ? "Synthesizing Hindi… first run loads IndicF5 (~40s), then ~4s per second of speech."
+    : "Synthesizing… (first run loads the model, ~30s)");
   const t0 = performance.now();
   const res = await fetch("/api/speak", { method: "POST", body: fd });
   if (!res.ok) {
@@ -421,6 +469,7 @@ $("speak").onclick = async () => {
   $("out").play();
   setStatus($("speakStatus"), "Done.", "ok");
   $("metrics").textContent =
+    `${res.headers.get("X-Engine") || "?"} (${res.headers.get("X-Language") || "?"}) · ` +
     `${res.headers.get("X-Audio-Seconds")}s of audio · synthesis ${res.headers.get("X-Synthesis-Ms")}ms · ` +
     `realtime factor ${res.headers.get("X-Realtime-Factor")} · round trip ${wall}s · ` +
     `${(blob.size / 1024).toFixed(0)} KB wav`;

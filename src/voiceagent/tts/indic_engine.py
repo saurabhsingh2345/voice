@@ -40,6 +40,15 @@ PARLER_REPO = "ai4bharat/indic-parler-tts"
 #: IndicF5 synthesizes at 24 kHz, matching Kokoro and Chatterbox.
 SAMPLE_RATE = 24_000
 
+#: f5_tts clips any reference longer than this internally. We truncate to the
+#: same bound *before* handing it over, so the transcript the caller supplies
+#: describes the audio the model actually hears. Getting this wrong is not a
+#: subtle quality issue: F5 estimates how long the output should be from
+#: (generated text length / reference text length) x reference duration, so a
+#: transcript that under-describes its audio inflates the output. A 4-second
+#: Hindi sentence came out as 25 seconds of audio that way.
+REFERENCE_CLIP_SECONDS = 12.0
+
 
 class IndicTTSAccessError(RuntimeError):
     """Raised when the model is gated and the machine is not authenticated."""
@@ -186,9 +195,35 @@ class IndicTTSEngine(TTSEngine):
 
     def set_reference(self, audio: np.ndarray, text: str, sample_rate: int) -> None:
         """Point the engine at a consented reference clip and its transcript."""
-        self.reference_audio = audio
-        self.reference_text = text
+        limit = int(REFERENCE_CLIP_SECONDS * sample_rate)
+        self.reference_audio = audio[:limit]
+        self.reference_text = text.strip()
         self.reference_sample_rate = sample_rate
+
+    def reference_health(self) -> str | None:
+        """Warn when the transcript plainly does not describe the audio.
+
+        Speech runs roughly 12-18 characters per second. Far outside that band
+        means the transcript is wrong, and the symptom is wildly wrong output
+        length rather than an error.
+        """
+        if self.reference_audio is None or not self.reference_text:
+            return None
+        seconds = len(self.reference_audio) / self.reference_sample_rate
+        if seconds < 0.5:
+            return None
+        rate = len(self.reference_text) / seconds
+        if rate < 5:
+            return (
+                f"reference transcript looks too short for {seconds:.1f}s of audio "
+                f"({rate:.1f} chars/sec); output will be much longer than expected"
+            )
+        if rate > 40:
+            return (
+                f"reference transcript looks too long for {seconds:.1f}s of audio "
+                f"({rate:.1f} chars/sec); output may be clipped"
+            )
+        return None
 
     def _require_reference(self) -> None:
         if self.reference_audio is None:
