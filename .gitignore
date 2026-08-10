@@ -20,3 +20,6 @@ voice_profiles/
 
 .DS_Store
 .env
+
+# Rust build artifacts (the Tauri target dir is ~1.5 GB)
+desktop/src-tauri/target/
