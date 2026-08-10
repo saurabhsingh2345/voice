@@ -326,8 +326,25 @@ async def speak(
                 raise HTTPException(
                     400,
                     "This voice has no reference transcript. IndicF5 needs to know "
-                    "what the reference clip says. Re-enrol the voice and fill in "
-                    "the transcript field, then try again.",
+                    "what the reference clip says. Add a transcript for this voice "
+                    "and try again.",
+                )
+
+            # A transcript in the wrong script means it does not describe the
+            # audio -- the usual cause is auto-transcribing Hindi speech with
+            # the English-only STT, which invents plausible English words. F5
+            # conditions on that text, so the output becomes babble rather than
+            # failing. Refuse instead of synthesizing nonsense.
+            ref_detect = detect(profile.reference_text)
+            if not ref_detect.is_indic:
+                raise HTTPException(
+                    400,
+                    "The reference transcript for this voice is in Latin script, but "
+                    "you asked for Indic output. If the clip is spoken in Hindi, type "
+                    "the Devanagari transcript by hand -- Auto-transcribe uses an "
+                    "English-only model and will invent English words for Hindi audio, "
+                    "which makes the synthesis unintelligible. If the clip really is "
+                    "English, record a new one in Hindi for native results.",
                 )
 
             indic = await _ensure_indic()

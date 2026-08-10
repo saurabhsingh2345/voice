@@ -309,11 +309,20 @@ async function refreshVoices() {
   voices.forEach(v => {
     const row = document.createElement("div");
     row.className = "voice";
-    const hasText = (v.reference_text || "").trim().length > 0;
+    const refText = (v.reference_text || "").trim();
+    const hasText = refText.length > 0;
+    const isIndic = /[\u0900-\u097F\u0980-\u09FF\u0B80-\u0BFF]/.test(refText);
+    // Show the transcript rather than just "set". Hiding it is how a wrong
+    // auto-transcription went unnoticed and produced unintelligible speech.
+    const state = !hasText
+      ? "<span style='color:var(--warn)'>no transcript — Indic unavailable</span>"
+      : isIndic
+        ? "<span style='color:var(--ok)'>Indic transcript — ready</span>"
+        : "<span style='color:var(--warn)'>Latin transcript — English only</span>";
     row.innerHTML = `<span><strong>${v.speaker_name}</strong>
-      <span class="muted">· ${v.duration_seconds}s · ${hasText
-        ? "transcript set — Hindi ready"
-        : "<span style='color:var(--warn)'>no transcript — Hindi unavailable</span>"}</span></span>`;
+      <span class="muted">· ${v.duration_seconds}s · ${state}</span>
+      ${hasText ? `<div class="muted" style="margin-top:.25rem;font-size:.78rem;opacity:.85">
+        “${refText.replace(/</g,"&lt;").slice(0,90)}${refText.length>90?"…":""}”</div>` : ""}</span>`;
 
     // Voices enrolled before Indic support have no transcript, and re-recording
     // a minute of audio to add one line of text would be a bad trade.
@@ -324,7 +333,7 @@ async function refreshVoices() {
     // way to get wildly wrong output length, so offer to do it from the audio.
     const auto = document.createElement("button");
     auto.textContent = "Auto-transcribe";
-    auto.title = "Transcribe the clip with local STT (English clips only)";
+    auto.title = "English clips only — will invent words for Hindi audio";
     auto.onclick = async () => {
       auto.disabled = true; auto.textContent = "Transcribing…";
       const res = await fetch(`/api/voices/${v.profile_id}/transcribe`, { method: "POST" });
