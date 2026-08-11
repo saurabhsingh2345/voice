@@ -18,6 +18,11 @@ data/
 recordings/
 voice_profiles/
 
+# Real recorded speech and anything cloned from it. The English fixtures are
+# synthetic (macOS `say`, see stt/fixtures.py) and stay tracked; these do not.
+fixtures/hi/
+eval_out/
+
 .DS_Store
 .env
 
