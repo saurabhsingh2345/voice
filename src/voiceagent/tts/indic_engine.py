@@ -248,11 +248,47 @@ class IndicTTSEngine(TTSEngine):
     # --- reference voice --------------------------------------------------
 
     def set_reference(self, audio: np.ndarray, text: str, sample_rate: int) -> None:
-        """Point the engine at a consented reference clip and its transcript."""
-        limit = int(REFERENCE_CLIP_SECONDS * sample_rate)
-        self.reference_audio = audio[:limit]
-        self.reference_text = text.strip()
+        """Point the engine at a consented reference clip and its transcript.
+
+        A clip longer than REFERENCE_CLIP_SECONDS gets its *transcript* trimmed
+        rather than its audio truncated, which is the opposite of what this used
+        to do and measurably better.
+
+        f5_tts clips the reference to 12s internally, and it does so at a silence
+        boundary when it can find one -- far better than a hard cut mid-word. So
+        the audio is handed over whole and that logic is left alone. What f5_tts
+        does *not* do is adjust the transcript, and the transcript is what sets
+        the output length: duration is estimated as
+        (generated text length / reference text length) x reference duration. A
+        transcript describing 21s of speech attached to the 12s the model
+        actually hears inflates the denominator, so the output comes out too
+        short -- and syllables get swallowed to fit.
+
+        Measured on a 21.1s clip whose transcript described all 21.1s,
+        synthesizing the same sentence (round-trip overlap, Hindi pinned):
+
+            hard-cut audio 12s, full transcript   -> 88%, 2.89s (rushed)
+            whole audio,        full transcript   -> 82%, 2.76s (worse)
+            whole audio,        trimmed transcript-> 95%, 5.00s (correct)
+
+        Raising nfe_step from 32 to 48 changed nothing once the transcript
+        matched, so this -- not the sampler -- was the binding constraint.
+        """
+        self.reference_audio = audio
         self.reference_sample_rate = sample_rate
+
+        text = text.strip()
+        seconds = len(audio) / sample_rate if sample_rate else 0.0
+        if seconds > REFERENCE_CLIP_SECONDS and seconds > 0:
+            # Trim on a word boundary, proportionally to the share of the clip
+            # f5_tts will keep. Approximate -- it cuts at a silence, not exactly
+            # at 12.0s -- but it keeps the chars-per-second ratio honest, which
+            # is what the duration estimate depends on.
+            words = text.split()
+            keep = max(1, int(len(words) * REFERENCE_CLIP_SECONDS / seconds))
+            self.reference_text = " ".join(words[:keep])
+        else:
+            self.reference_text = text
 
     def reference_health(self) -> str | None:
         """Warn when the transcript plainly does not describe the audio.
@@ -266,6 +302,17 @@ class IndicTTSEngine(TTSEngine):
         seconds = len(self.reference_audio) / self.reference_sample_rate
         if seconds < 0.5:
             return None
+        if seconds > REFERENCE_CLIP_SECONDS:
+            # Report against the portion f5_tts will actually keep, not the whole
+            # clip; measuring the trimmed transcript against the full duration
+            # gives a rate that looks fine while describing audio the model never
+            # hears. Say so, because the user can fix it by re-recording shorter.
+            return (
+                f"reference clip is {seconds:.1f}s but only the first "
+                f"{REFERENCE_CLIP_SECONDS:.0f}s is used; the transcript was "
+                f"trimmed to match. A clip of {REFERENCE_CLIP_SECONDS:.0f}s or "
+                f"less with an exact transcript clones more faithfully."
+            )
         rate = len(self.reference_text) / seconds
         if rate < 5:
             return (

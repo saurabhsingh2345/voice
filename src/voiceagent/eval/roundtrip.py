@@ -23,8 +23,13 @@ import soundfile as sf
 WHISPER_REPO = "mlx-community/whisper-large-v3-turbo"
 
 
-def transcribe(path: str | Path) -> tuple[str, str]:
-    """Return (text, detected_language) for an audio file."""
+def transcribe(path: str | Path, language: str | None = None) -> tuple[str, str]:
+    """Return (text, detected_language) for an audio file.
+
+    `language` pins the decode. Left as None it auto-detects, which is what makes
+    this a real check -- a wrong-language result is the signal. Pin it only to
+    re-decode into a specific script (see EQUIVALENT_LANGUAGES).
+    """
     import mlx_whisper
 
     audio, sr = sf.read(str(path), dtype="float32")
@@ -34,7 +39,9 @@ def transcribe(path: str | Path) -> tuple[str, str]:
         idx = (np.arange(int(len(audio) * 16_000 / sr)) * sr / 16_000).astype(int)
         audio = audio[idx[idx < len(audio)]]
 
-    result = mlx_whisper.transcribe(audio, path_or_hf_repo=WHISPER_REPO, fp16=True, verbose=None)
+    result = mlx_whisper.transcribe(
+        audio, path_or_hf_repo=WHISPER_REPO, fp16=True, verbose=None, language=language
+    )
     return result.get("text", "").strip(), result.get("language", "?")
 
 
@@ -57,8 +64,32 @@ def character_overlap(expected: str, heard: str) -> float:
     return hits / len(expected_chars)
 
 
+#: Languages Whisper may legitimately return for correct Hindi speech.
+#:
+#: Hindi and Urdu are the same spoken language (Hindustani) in two scripts, so
+#: Whisper can transcribe perfectly good Hindi audio into Perso-Arabic and label
+#: it "ur". This is not a hypothetical: a correct rendering of
+#: "आज मौसम बहुत सुहावना है..." came back as
+#: "آج موسم بہت سہاونا ہے اور آسمان بلکل صاف ہے" -- the same sentence, word for
+#: word -- and scored 0% overlap purely because the scripts differ. Re-running it
+#: with the language pinned to Hindi scored 95%.
+#:
+#: Treating "ur" as a failure would reject good audio, so it is accepted as an
+#: alias and the transcript is re-decoded with Hindi pinned to score it.
+EQUIVALENT_LANGUAGES: dict[str, frozenset[str]] = {
+    "hi": frozenset({"hi", "ur"}),
+}
+
+
 def check(path: str | Path, expected: str, expect_language: str | None = None) -> bool:
     heard, language = transcribe(path)
+
+    accepted = EQUIVALENT_LANGUAGES.get(expect_language or "", frozenset())
+    if expect_language and language in accepted and language != expect_language:
+        # Same language, other script. Re-decode pinned so the comparison is
+        # script-for-script rather than scoring Devanagari against Perso-Arabic.
+        heard, _ = transcribe(path, language=expect_language)
+        language = expect_language
     overlap = character_overlap(expected, heard)
 
     print(f"file     : {path}")

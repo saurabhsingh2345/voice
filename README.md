@@ -447,6 +447,45 @@ successful transcript, which is why `Transcript` now carries a `language` field
 and Moonshine reports `en` rather than `None`: it will not tell you when it is
 wrong, so the caller has to be able to notice.
 
+### Getting the best voice out of it: the reference clip is the lever
+
+**Use a clip of 12 s or less, with an exact transcript.** f5-tts clips the
+reference to 12 s regardless, so a longer recording is half-wasted — and worse,
+the transcript then describes speech the model never hears. The transcript sets
+the output length, since duration is estimated as
+`(generated text length / reference text length) × reference duration`. Inflate
+the denominator and the output comes out short, with syllables swallowed to fit.
+
+Measured on a 21.1 s clip whose transcript described all 21.1 s, synthesizing the
+same sentence (round-trip overlap, Hindi pinned):
+
+| Reference handling | Overlap | Output | |
+| --- | --- | --- | --- |
+| hard-cut audio to 12 s, full transcript | 88 % | 2.89 s | rushed — `सुहावना` → `सहुना` |
+| whole audio, full transcript | 82 % | 2.76 s | worse |
+| **whole audio, transcript trimmed to match** | **95 %** | **5.00 s** | verbatim |
+
+So `set_reference` now hands the audio over whole — letting f5-tts cut at a
+silence boundary rather than mid-word — and trims the *transcript* instead.
+Clips of 12 s or less are untouched. Over-long clips are reported rather than
+silently accepted.
+
+**Raising `nfe_step` from 32 to 48 changed nothing** once the transcript matched
+(95 % either way, ~1.6× the compute), so the sampler was never the constraint.
+That is worth stating because it is the obvious knob to reach for first.
+
+### Hindi and Urdu are one language in two scripts
+
+Whisper can transcribe correct Hindi into Perso-Arabic and label it `ur`. A
+faithful rendering of `आज मौसम बहुत सुहावना है…` came back as
+`آج موسم بہت سہاونا ہے اور آسمان بلکل صاف ہے` — the same sentence, word for word
+— and scored **0 % overlap purely because the scripts differ**. Pinned to Hindi
+the same audio scored 95 %.
+
+The round-trip check therefore treats `ur` as an alias for `hi` and re-decodes
+pinned before scoring. Without that it rejects good audio, which is the most
+dangerous kind of test failure: it sends you looking for a bug that isn't there.
+
 ### Unresolved: the Indic path fails the license audit
 
 `voice-doctor` exits non-zero right now, and it is right to. Installing

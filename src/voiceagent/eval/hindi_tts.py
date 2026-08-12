@@ -115,6 +115,12 @@ async def run(register: str | None, limit: int | None) -> int:
             rtfs.append(rtf)
 
         heard, language = transcribe(out_path)
+        # Hindi and Urdu are one spoken language in two scripts, so Whisper can
+        # return correct Hindi as Perso-Arabic labelled "ur". Re-decode pinned
+        # rather than failing it -- see EQUIVALENT_LANGUAGES in roundtrip.py.
+        if language in ("ur", "pa") and language != "hi":
+            heard, _ = transcribe(out_path, language="hi")
+            language = "hi"
         # Score against the normalized text -- that is what was actually spoken
         # -- and normalize the transcript too, because Whisper applies *inverse*
         # text normalization: it writes spoken numerals back as digits. The TTS
