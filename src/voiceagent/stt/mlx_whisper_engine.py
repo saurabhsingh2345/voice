@@ -26,10 +26,15 @@ class MLXWhisperEngine(STTEngine):
         self,
         repo: str = DEFAULT_REPO,
         interim_interval_s: float = 0.6,
-        language: str = "en",
+        language: str | None = "en",
     ) -> None:
         self.repo = repo
         self.interim_interval_s = interim_interval_s
+        #: None means let Whisper detect the language per utterance, which is
+        #: what a bilingual loop needs. Pinning it is still worth doing when the
+        #: language is known: detection costs an extra pass and can flip on short
+        #: or noisy audio, and a wrong flip sends the text to a TTS engine that
+        #: cannot pronounce it.
         self.language = language
         self._loaded = False
         self._peak_bytes = 0
@@ -95,6 +100,10 @@ class MLXWhisperEngine(STTEngine):
             text=result["text"].strip(),
             is_final=True,
             latency_ms=elapsed_ms,
+            # When the language is pinned, Whisper echoes it back; when it is
+            # None it reports what it detected. Either way this is the language
+            # the text is actually in.
+            language=result.get("language", self.language),
         )
 
     async def stream(self, audio_chunks: AsyncIterator[np.ndarray]) -> AsyncIterator[Transcript]:
@@ -112,12 +121,22 @@ class MLXWhisperEngine(STTEngine):
                 audio = np.concatenate(buffer)
                 # Decode off the event loop so mic capture keeps draining.
                 partial = await asyncio.to_thread(self.transcribe, audio)
-                yield Transcript(text=partial.text, is_final=False, latency_ms=partial.latency_ms)
+                yield Transcript(
+                    text=partial.text,
+                    is_final=False,
+                    latency_ms=partial.latency_ms,
+                    language=partial.language,
+                )
 
         if buffer:
             audio = np.concatenate(buffer)
             final = await asyncio.to_thread(self.transcribe, audio)
-            yield Transcript(text=final.text, is_final=True, latency_ms=final.latency_ms)
+            yield Transcript(
+                text=final.text,
+                is_final=True,
+                latency_ms=final.latency_ms,
+                language=final.language,
+            )
 
     @property
     def resident_bytes(self) -> int:

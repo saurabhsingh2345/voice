@@ -19,6 +19,15 @@ import numpy as np
 
 from voiceagent.stt.base import SAMPLE_RATE, STTEngine, Transcript
 
+#: This engine only ever runs English models here (see the license note above),
+#: so every transcript it produces is English. It is reported rather than left
+#: as None because the failure mode is silent and nasty: Moonshine does not
+#: reject non-English audio, it *invents* plausible English words for it. A Hindi
+#: clip comes back as confident English nonsense, which downstream looks exactly
+#: like a successful transcription. Stating the language lets a caller notice the
+#: mismatch instead of acting on fiction.
+LANGUAGE = "en"
+
 
 class MoonshineEngine(STTEngine):
     name = "moonshine"
@@ -100,7 +109,9 @@ class MoonshineEngine(STTEngine):
         result = self._transcriber.transcribe_without_streaming(samples, SAMPLE_RATE)
         elapsed_ms = (time.perf_counter() - started) * 1000
 
-        return Transcript(text=self._join(result), is_final=True, latency_ms=elapsed_ms)
+        return Transcript(
+            text=self._join(result), is_final=True, latency_ms=elapsed_ms, language=LANGUAGE
+        )
 
     async def stream(self, audio_chunks: AsyncIterator[np.ndarray]) -> AsyncIterator[Transcript]:
         """True streaming: Moonshine emits line events as speech is recognized."""
@@ -135,6 +146,7 @@ class MoonshineEngine(STTEngine):
                     text=text,
                     is_final=line.is_complete,
                     latency_ms=float(line.last_transcription_latency_ms),
+                    language=LANGUAGE,
                 ),
             )
 

@@ -218,10 +218,13 @@ async def update_voice(profile_id: str, reference_text: str = Form(...)) -> dict
         profile = store.set_reference_text(profile_id, reference_text)
     except KeyError as exc:
         raise HTTPException(404, str(exc)) from exc
-    # The engine caches the decoded clip and its transcript; drop it so the new
-    # text is picked up on the next request.
-    if _indic_engine is not None:
-        _indic_engine.forget_reference(profile_id)
+    # No cache to invalidate here: unlike the Chatterbox engine, IndicTTSEngine
+    # holds no per-profile reference cache, and /api/speak re-reads the clip and
+    # transcript from the store on every request. This used to call
+    # _indic_engine.forget_reference(), a method that only exists on the
+    # Chatterbox engine -- so correcting a transcript raised AttributeError once
+    # Hindi synthesis had loaded the Indic engine. That is the exact path the
+    # output-length fix depends on.
     return {"profile_id": profile.profile_id, "reference_text": profile.reference_text}
 
 
@@ -277,9 +280,9 @@ async def transcribe_reference(profile_id: str) -> dict:
     if not text:
         raise HTTPException(422, "nothing intelligible was found in this clip")
 
+    # See update_voice: nothing to invalidate, and calling forget_reference here
+    # used to raise AttributeError on the Indic engine.
     profile = store.set_reference_text(profile_id, text)
-    if _indic_engine is not None:
-        _indic_engine.forget_reference(profile_id)
     return {
         "profile_id": profile_id,
         "reference_text": profile.reference_text,

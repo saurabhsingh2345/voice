@@ -86,8 +86,10 @@ async def run(register: str | None, limit: int | None) -> int:
     table.add_column("Heard back")
     table.add_column("Lang", justify="center")
     table.add_column("Overlap", justify="right")
+    table.add_column("RTF", justify="right")
 
     failures = 0
+    rtfs: list[float] = []
     for case in cases:
         out_path = OUT_DIR / f"{case.slug}_{case.register}.wav"
         # Normalize exactly as the router does, so digits and symbols reach the
@@ -102,6 +104,15 @@ async def run(register: str | None, limit: int | None) -> int:
 
         samples = np.concatenate([c.samples for c in chunks])
         sf.write(out_path, samples, chunks[0].sample_rate)
+
+        # RTF = synthesis time / audio duration. Above 1 means it cannot keep up
+        # with speech, which decides whether this engine can serve the live loop
+        # or only type-and-listen.
+        seconds = len(samples) / chunks[0].sample_rate
+        latency_ms = chunks[0].latency_ms
+        rtf = (latency_ms / 1000) / seconds if latency_ms and seconds else float("nan")
+        if rtf == rtf:  # not NaN
+            rtfs.append(rtf)
 
         heard, language = transcribe(out_path)
         # Score against the normalized text -- that is what was actually spoken
@@ -124,6 +135,7 @@ async def run(register: str | None, limit: int | None) -> int:
             shown or "[dim](silence)[/]",
             language if language == "hi" else f"[red]{language}[/]",
             f"{overlap:.0%}" if ok else f"[red]{overlap:.0%}[/]",
+            f"{rtf:.2f}",
         )
 
     console.print(table)
@@ -137,6 +149,13 @@ async def run(register: str | None, limit: int | None) -> int:
     else:
         console.print(f"\n[green]all {total} sentences came back as intelligible Hindi[/] "
                       f"(>={PASS_OVERLAP:.0%} overlap)")
+    if rtfs:
+        median_rtf = sorted(rtfs)[len(rtfs) // 2]
+        console.print(f"median RTF {median_rtf:.2f} "
+                      f"(synthesis time / audio duration; >1 cannot keep up with speech)")
+        if median_rtf > 1:
+            console.print("[yellow]This is type-and-listen speed, not live-loop speed.[/] "
+                          "Kokoro runs ~0.1 for English.")
     console.print(f"audio written to {OUT_DIR}")
     return 1 if failures else 0
 

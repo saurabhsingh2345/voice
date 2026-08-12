@@ -24,6 +24,16 @@ class Transcript:
     """False for interim hypotheses that may still be revised."""
     latency_ms: float | None = None
     """Time from end-of-audio to this result. Populated for benchmarking."""
+    language: str | None = None
+    """ISO code the engine detected, or None if it cannot detect one.
+
+    A bilingual loop needs this, not as a nicety: the reply has to be routed to
+    a TTS engine that can actually speak the language that was spoken. Kokoro
+    cannot say Hindi at all in this build and IndicF5 cannot pronounce English
+    orthography, so guessing wrong is not a degraded voice, it is unintelligible
+    output. Engines that only ever handle one language report that language
+    rather than None, so callers never have to special-case them.
+    """
 
 
 class STTEngine(ABC):
