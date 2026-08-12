@@ -378,21 +378,54 @@ class IndicTTSEngine(TTSEngine):
         return audio
 
     async def synthesize(self, text: str, voice: str | None = None) -> AsyncIterator[AudioChunk]:
+        """Synthesize a sentence at a time, yielding one chunk per sentence.
+
+        Handing the whole text to f5_tts in one call is what a naive
+        implementation does, and it crashes. f5_tts splits long text into batches
+        internally, and on this machine a 428-character narration (5 batches)
+        took down the whole process with a segmentation fault inside PyTorch's
+        Metal backend -- SIGSEGV in `abs_kernel_mps` via
+        `MetalShaderLibrary::exec_unary_kernel`, on the worker thread this runs
+        on. No Python traceback, no error response: the server simply vanished
+        mid-request, which is indistinguishable from a hang.
+
+        Synthesizing per sentence keeps each call small and made the same
+        narration complete (42.2s of audio, 95% round-trip overlap). Be clear
+        about what this is though: a **mitigation, not a fix**. The underlying
+        fault is a thread-safety problem in PyTorch's MPS shader library, so it
+        is probabilistic -- one 329-character sentence here still spans several
+        batches and survives. Less work per call means less exposure, not none.
+
+        Chunking is unconditional because a single short sentence produces
+        exactly one call, identical to the previous behaviour.
+        """
         if self._model is None:
             raise RuntimeError("load() must be called before synthesize()")
 
         self._cancelled = False
         started = time.perf_counter()
-        audio = await asyncio.to_thread(self._generate_blocking, text)
-        if self._cancelled or not audio.size:
+
+        chunker = SentenceChunker()
+        sentences = [*chunker.feed(text), *chunker.flush()]
+        if not sentences:
             return
 
-        yield AudioChunk(
-            samples=audio,
-            sample_rate=SAMPLE_RATE,
-            is_final=True,
-            latency_ms=(time.perf_counter() - started) * 1000,
-        )
+        first = True
+        for index, sentence in enumerate(sentences):
+            if self._cancelled:
+                return
+            audio = await asyncio.to_thread(self._generate_blocking, sentence)
+            if self._cancelled or not audio.size:
+                continue
+            yield AudioChunk(
+                samples=audio,
+                sample_rate=SAMPLE_RATE,
+                is_final=index == len(sentences) - 1,
+                # Latency is time to *first* audio, which is what a listener
+                # waits for; later chunks have already started playing.
+                latency_ms=(time.perf_counter() - started) * 1000 if first else None,
+            )
+            first = False
 
     async def synthesize_stream(
         self, text_chunks: AsyncIterator[str], voice: str | None = None

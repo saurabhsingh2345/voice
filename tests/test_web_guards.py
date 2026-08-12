@@ -198,30 +198,20 @@ def test_memory_threshold_is_above_the_model_size():
     assert srv.MIN_FREE_GIB_FOR_INDIC >= 2.0
 
 
-def test_swap_is_guarded_as_well_as_available_memory():
-    """`available` alone is not enough, learned by losing a server.
+def test_memory_requirement_scales_with_text_length():
+    """A short sentence and a five-batch narration do not need the same headroom.
 
-    A narration was attempted with 4.9 GiB reported available and the process was
-    killed outright partway through generation -- no traceback, just gone --
-    because swap sat at 15.33 of 16.00 GiB. `available` counts reclaimable pages
-    and reports gigabytes free in that state, so the swap fraction has to be
-    checked independently.
+    This is why one succeeded and the other was killed with the same memory free.
     """
-    assert 0.5 < srv.MAX_SWAP_FRACTION < 1.0
+    assert srv.CHARS_PER_BATCH > 0 and srv.GIB_PER_EXTRA_BATCH > 0
+    one = srv.MIN_FREE_GIB_FOR_INDIC
+    five = srv.MIN_FREE_GIB_FOR_INDIC + srv.GIB_PER_EXTRA_BATCH * 4
+    assert five > one
 
 
-def test_swap_guard_refuses_and_names_swap(monkeypatch):
-    import psutil
-
-    real = psutil.swap_memory()
-    full = real._replace(percent=99.0, used=int(15.9 * 1024**3), total=int(16 * 1024**3))
-    monkeypatch.setattr(psutil, "swap_memory", lambda: full)
-
-    r = client.post(
-        "/api/speak", data={"text": "नमस्ते दुनिया।", "profile_id": "e214ec611523"}
-    )
-    # 507 if it reached the guard; anything else means the guard was bypassed.
-    # A missing profile would 403 first, so only assert when we got that far.
-    if r.status_code != 403:
-        assert r.status_code == 507, r.text
-        assert "swap" in r.json()["detail"].lower()
+def test_swap_percentage_is_not_used_as_a_guard():
+    """Tried, and it was wrong. macOS sizes its swap file to demand, so it read
+    92% full with 113 GiB free on disk while the machine was healthy and
+    `memory_pressure` reported 74% free. Guarding on it refused work that would
+    have succeeded."""
+    assert not hasattr(srv, "MAX_SWAP_FRACTION")

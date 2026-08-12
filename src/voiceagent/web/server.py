@@ -92,19 +92,31 @@ MAX_SPEAK_CHARS = 3000
 #: needs headroom for activations on top.
 MIN_FREE_GIB_FOR_INDIC = 2.5
 
-#: Refuse when swap is this full, regardless of what `available` claims.
+#: Extra memory to require per synthesis batch beyond the first.
 #:
-#: `available` is not sufficient on its own and this was learned the hard way: a
-#: narration was attempted with 4.9 GiB "available" and the server process was
-#: killed outright by the OS partway into a five-batch generation -- no
-#: traceback, no error, just gone, because swap was at 15.33 of 16.00 GiB. Once
-#: swap is nearly exhausted the kernel has nowhere to put a large allocation, so
-#: it kills the allocating process instead. `available` counts reclaimable pages
-#: and cheerfully reports several free gigabytes in that state.
+#: f5-tts splits text into batches of roughly this many characters and holds
+#: activations for the batch it is working on, so the requirement grows with
+#: length -- which is why a short sentence succeeded and a five-batch narration
+#: was killed with the *same* memory free.
 #:
-#: A refusal the user can act on is strictly better than a server that vanishes
-#: mid-request, which is indistinguishable from a hang or a crash.
-MAX_SWAP_FRACTION = 0.90
+#: The numbers are a rough envelope from observation, not a model of the
+#: allocator: one batch completed at ~4.9 GiB available; five batches died there;
+#: five batches completed at ~7.5 GiB.
+CHARS_PER_BATCH = 100
+GIB_PER_EXTRA_BATCH = 0.5
+
+#: Deliberately NOT guarding on swap percentage, having tried it and been wrong.
+#:
+#: The reasoning was that a server killed mid-generation coincided with swap at
+#: 15.33 of 16.00 GiB, so near-full swap meant no room for a large allocation.
+#: But macOS sizes its swap file dynamically: with 113 GiB free on disk it read
+#: "92% full" at 13.00 GiB total while macOS's own `memory_pressure` reported 74%
+#: of memory free and the machine was healthy. Swap percentage is therefore
+#: almost always high on this platform and says nothing about headroom -- it
+#: describes how tightly the file is sized, not whether it can grow. Guarding on
+#: it refused work that would have succeeded, which is a worse failure than the
+#: one it was meant to prevent. Available memory, scaled by the size of the job,
+#: is the signal that actually tracked the kills.
 
 STATIC = Path(__file__).resolve().parent / "static"
 
@@ -495,26 +507,17 @@ async def speak(
                 import psutil as _psutil
 
                 free_gib = _psutil.virtual_memory().available / 1024**3
-                if free_gib < MIN_FREE_GIB_FOR_INDIC:
+                batches = max(1, -(-len(spoken) // CHARS_PER_BATCH))
+                needed = MIN_FREE_GIB_FOR_INDIC + GIB_PER_EXTRA_BATCH * (batches - 1)
+                if free_gib < needed:
                     raise HTTPException(
                         507,
-                        f"Only {free_gib:.1f} GiB of memory is free and Hindi synthesis "
-                        f"needs about {MIN_FREE_GIB_FOR_INDIC:.1f} GiB. Close some apps "
-                        "and try again -- starting anyway would swap and hang rather "
-                        "than finish.",
-                    )
-
-                swap = _psutil.swap_memory()
-                if swap.total and swap.percent / 100 >= MAX_SWAP_FRACTION:
-                    raise HTTPException(
-                        507,
-                        f"Swap is {swap.percent:.0f}% full "
-                        f"({swap.used / 1024**3:.1f} of {swap.total / 1024**3:.1f} GiB). "
-                        "With swap this full the system kills whichever process asks "
-                        "for a large allocation, and that would be this server -- it "
-                        "would disappear mid-request rather than return an error. "
-                        "Close whatever is holding memory (a running VM, extra editor "
-                        "or browser windows) and try again.",
+                        f"Only {free_gib:.1f} GiB of memory is free. This text is about "
+                        f"{batches} synthesis batch{'es' if batches > 1 else ''} and needs "
+                        f"roughly {needed:.1f} GiB. Close whatever is holding memory (a "
+                        "running VM, extra editor or browser windows), or send a shorter "
+                        "passage. Starting anyway risks the system killing this server "
+                        "mid-request rather than returning an error.",
                     )
 
                 indic = await _ensure_indic()
