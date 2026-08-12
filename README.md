@@ -447,6 +447,40 @@ successful transcript, which is why `Transcript` now carries a `language` field
 and Moonshine reports `en` rather than `None`: it will not tell you when it is
 wrong, so the caller has to be able to notice.
 
+### Unresolved: the Indic path fails the license audit
+
+`voice-doctor` exits non-zero right now, and it is right to. Installing
+`f5-tts` for IndicF5 pulled in four non-permissive packages, all four
+transitively from that one dependency:
+
+| Package | License | Arrives via | Imported on our path? |
+| --- | --- | --- | --- |
+| `encodec` | **CC-BY-NC-4.0** | vocos ← f5-tts | yes |
+| `Unidecode` | **GPL** | f5-tts (direct) | **no** |
+| `frozendict` | LGPL v3 | einx ← f5-tts | yes |
+| `soxr` | LGPL-2.1-or-later | librosa ← f5-tts | yes |
+
+This is not an accepted exception like `num2words`; it is a **known violation of
+this project's own constraint**, recorded rather than waived. Consequences,
+stated plainly:
+
+- **Personal use is fine.** Nothing here restricts running it on your own
+  machine, which is what this project is.
+- **Commercial distribution is not.** `encodec` is non-commercial — the same
+  class as Fish Speech and XTTS v2, which were rejected on exactly these
+  grounds. Shipping the Indic path commercially would be inconsistent.
+- `Unidecode` is GPL, the viral copyleft the Kokoro work went out of its way to
+  avoid. It is **not imported** on the synthesis path, so the phonemizer stub
+  precedent applies directly and it looks removable.
+
+The English pipeline is unaffected — none of these are needed to run it.
+
+Resolving this means either replacing `vocos` (which is awkward: IndicF5's
+bundled vocoder tensors are bit-identical to stock `vocos-mel-24khz`, so it is
+the *right* vocoder), or dropping IndicF5 for **Indic Parler-TTS** (Apache-2.0,
+no cloning, needs its own older `transformers`). That is a product decision, not
+a cleanup, so it is left open.
+
 ### Hindi is type-and-listen, not conversational
 
 IndicF5's median **RTF is 3.40** against Kokoro's ~0.1. Three seconds of compute
@@ -515,6 +549,9 @@ failures that are mechanical.
 
 Known gaps, stated rather than buried:
 
+- **`voice-doctor` currently fails**: `f5-tts` pulled in four non-permissive
+  packages, one of them non-commercial. Personal use is unaffected; commercial
+  distribution of the Indic path is not cleared. See above.
 - Hindi is **type-and-listen only** (RTF 3.40); the live loop stays English.
 - No acoustic echo cancellation — use headphones (Phase 4).
 - The desktop app is a launcher and still needs the checkout and its `.venv`.
