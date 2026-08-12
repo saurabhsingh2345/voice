@@ -31,7 +31,16 @@ SYSTEM_PROMPT = (
     "plain prose only, and never use emoji, markdown, bullet points, or "
     "special characters -- they get read out literally or mangled. Spell out "
     "symbols as words. Use the supplied tools when they are relevant instead "
-    "of guessing."
+    "of guessing. "
+    # The language rule is not politeness, it is a routing requirement: the TTS
+    # engine is chosen by the script of this reply, and neither engine degrades
+    # gracefully into the other's language. Qwen3 already mirrors the user's
+    # language without being told (measured 100% Devanagari on Hindi turns at
+    # baseline), but that was emergent rather than guaranteed. Saying it also
+    # shortened replies, which matters when they are spoken:
+    # 10.2 -> 7.3 words per sentence. See voiceagent.eval.hindi_llm.
+    "Reply in the same language the user wrote in; when they write Hindi, reply "
+    "in Devanagari script, never romanized Hindi and never English."
 )
 
 #: Cap on tool round-trips per turn, so a confused model cannot loop forever.

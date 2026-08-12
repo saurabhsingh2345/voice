@@ -337,6 +337,152 @@ would have caught:
 Server output goes to `data/server.log` — silencing it had made a failed launch
 look identical to a slow one.
 
+## Phase 9 — Hindi
+
+```bash
+uv run voice-web                                      # type Hindi, hear it
+uv run python -m voiceagent.eval.hindi_tts            # 22-sentence gate
+uv run python -m voiceagent.stt.benchmark_hi          # Hindi ASR table
+uv run python -m voiceagent.eval.hindi_llm --repeat 3 # LLM register
+```
+
+English goes to Kokoro, Devanagari to IndicF5 (MIT, 1.4 GB, MPS), one resident
+at a time. Kokoro is not merely accented in Hindi — it **cannot speak it at all**
+in this build, because its Hindi route needs espeak/phonemizer and that is GPLv3
+and deliberately disabled. So the Indic path is a separate engine, not a setting.
+
+### The bug that took the longest: rope on 16 heads instead of 1
+
+IndicF5 produced confident babble. The same Hindi sentence came back from
+Whisper as Indonesian, then Welsh, then Arabic. Everything structural checked
+out: 364/364 weights load with no missing or unexpected keys, the bundled
+vocoder is **bit-identical** to stock `charactr/vocos-mel-24khz` (mean |delta|
+exactly 0.0), the vocab covers the text, CPU and MPS agree.
+
+The cause was a behavioural change in `f5-tts`. IndicF5 shipped in March 2025
+against a version whose attention applied the rotary embedding to the *flat*
+`[b, n, 1024]` projection and only then split it into 16 heads of 64.
+`apply_rotary_pos_emb` rotates `t[..., :freqs.shape[-1]]` — channels `0:64`,
+which after that reshape are **exactly head 0**. The model was trained with rope
+on one head. Current `f5-tts` splits heads first and rotates all sixteen.
+
+No shape changes, so every weight loads and the failure is fluent nonsense
+rather than a crash. That is why it survived every check that looked at
+structure. Two flags restore the old semantics, and **both** are required:
+
+| `pe_attn_head` | `text_mask_padding` | Round-trip overlap | Detected |
+| --- | --- | --- | --- |
+| None (all heads) | True | 0 % | Arabic |
+| 1 | True | 55 % | Hindi, garbled |
+| **1** | **False** | **92 %** | **Hindi, correct** |
+
+An earlier pass concluded `text_mask_padding` made no difference — true in
+isolation, because it does nothing without the rope fix.
+
+**The method that found it:** IndicF5's Hugging Face repo bundles its own
+`f5_tts/` package. Diffing that against the installed version localises this
+class of bug in one step, and is worth doing before chasing PyPI version
+numbers. (EPSS sampling is a red herring: 32 steps is not in its table, so it
+falls back to `linspace` and is a no-op at the default.)
+
+### Verify by round trip, never by ear or spectrum
+
+Synthesize, then transcribe the result back with Whisper. Spectral measures are
+worse than useless here — the babble measured 0.06–0.10 spectral flatness
+against 0.088 for real speech, i.e. indistinguishable from genuine speech while
+being nonsense.
+
+Two things the harness has to get right or it lies to you:
+
+- **Normalize both sides before scoring.** Whisper applies *inverse* text
+  normalization, so a correct `एक हज़ार दो सौ निन्यानवे` comes back as `1299` and
+  scores 39 % against the words it actually spoke.
+- **Seed the sampler.** Flow matching starts from Gaussian noise and
+  `infer_process` exposes no seed, so one sentence scored 100 % on one run and
+  44 % on the next with no code change. The engine now seeds per call, which
+  makes degeneration deterministic rather than absent.
+
+Result: **22/22 intelligible**, 85–100 % overlap, all detected as Hindi, across
+formal, colloquial, code-mixed and numeric registers.
+
+### Code-mixed Hindi needed transliteration, not a better model
+
+Real speech mixes English in constantly. Every code-mixed sentence lost its
+English words — `meeting` vanished, `calendar` came back as `एउननर` — while the
+surrounding Hindi scored 88–100 %. All 52 Latin letters *are* in IndicF5's
+vocab, so nothing was out of vocabulary; the model simply has no acoustic
+mapping for English orthography.
+
+`text/translit_en.py` rewrites Latin into Devanagari: a loanword table first,
+because Hindi's spellings for these are conventions no rule derives (`email` is
+`ईमेल`, never `एमैल`), then a rule-based fallback so an unlisted word is
+approximated rather than dropped. Romanized Hindi is handled too, since `theek`
+read as English gives `थीक` rather than `ठीक`. Code-mixed went 0/5 → **5/5**.
+
+The fallback is a floor, not a solution — English spelling is not phonetic, so
+`though` and `tough` cannot both come out right. Add frequent words to the table.
+
+### Hindi ASR — and why the planned download was dropped
+
+Measured over 23 Hindi clips, scored by **character** error rate: Hindi matra
+placement and word boundaries vary between correct spellings, so WER punishes
+differences a listener would not notice.
+
+| Engine | Model mem | Median CER | Median RTF |
+| --- | --- | --- | --- |
+| **whisper-large-v3-turbo** (`hi` pinned) | 2362 MiB | **4.8 %** | 0.236 |
+| whisper-large-v3-turbo (auto-detect) | 2360 MiB | 4.8 % | 0.432 |
+| moonshine small-streaming | 643 MiB | 121.2 % | 0.071 |
+
+4.8 % from a model already installed makes `vasista22/whisper-hindi-medium`
+(~3 GB) unjustifiable against the memory ceiling. Auto-detection costs roughly
+double the compute for identical accuracy, so the language stays pinned whenever
+it is known.
+
+**Moonshine's 121 % is not a bad transcription, it is fabrication.** On a Hindi
+clip it returned *"In Namaste, my name is Lekh. I am your Sahay Takeli…"* and
+carried on inventing a passage about the Hajj. It is English-only here and does
+not refuse non-English audio. Nothing errors and the output looks like a
+successful transcript, which is why `Transcript` now carries a `language` field
+and Moonshine reports `en` rather than `None`: it will not tell you when it is
+wrong, so the caller has to be able to notice.
+
+### Hindi is type-and-listen, not conversational
+
+IndicF5's median **RTF is 3.40** against Kokoro's ~0.1. Three seconds of compute
+per second of speech is fine for typing a line and hearing it back, and unusable
+for a live loop, so no bilingual voice loop was built rather than shipping one
+that stalls every turn.
+
+### The LLM did not need fine-tuning
+
+The suspicion was that Qwen3 would produce stiff, translated-sounding Hindi.
+Measured over 60 samples across four prompting strategies, it does not:
+
+| Prompt | Devanagari | Everyday words | formal:everyday | Words/sentence |
+| --- | --- | --- | --- | --- |
+| baseline | 100 % | 100 % | 0:21 | 7.6 |
+| + language rule | 100 % | 89 % | 3:15 | 7.3 |
+| + colloquial rule | 100 % | 100 % | 0:18 | 8.2 |
+| + few-shot | 100 % | 100 % | 0:21 | 7.4 |
+
+Register was never the problem — it reaches for `मदद` and `ज़रूरत` over `सहायता`
+and `आवश्यकता` on its own, with no English leakage and nothing the synthesizer
+mangles. So fine-tuning is skipped, which is fortunate: a 0.9B full fine-tune
+needs ~14 GB before activations and cannot run on this 18 GB machine.
+
+The language rule went into the system prompt anyway, because reply language
+*selects the TTS engine* and neither engine degrades into the other's language.
+Emergent is not the same as guaranteed.
+
+Two honest limits on that table. The register lexicon measures word choice, not
+fluency — replies containing genuine nonsense (`जैसे गैस के साथ चले जा सकते हैं`)
+and inconsistent तू/आप still scored 100 %. And Qwen3 occasionally degenerates
+into a repetition loop (`ऊपर से ऊपर ऊपर से ऊपर …` until the token budget runs
+out), seen once in ~80 generations and not attributable to any prompt. Judging
+Hindi *quality* still needs a native speaker; these numbers only catch the
+failures that are mechanical.
+
 ## Layout
 
 | Path | Role |
@@ -348,6 +494,8 @@ look identical to a slow one.
 | `tools/` | Tool registry and implementations (Phase 5) |
 | `storage/` | Encrypted history and memory (Phase 6) |
 | `voice_clone/` | Consent-gated voice cloning (Phase 7) |
+| `text/` | Script detection, Hindi normalization, Latin→Devanagari (Phase 9) |
+| `eval/` | Hindi round-trip, register and diagnostic harnesses (Phase 9) |
 | `diagnostics/` | Environment and budget checks (Phase 0) |
 | `models.py` | Model registry, licenses, memory budget |
 
@@ -363,6 +511,14 @@ look identical to a slow one.
 - [x] **Phase 7** — voice cloning, consent-gated (Chatterbox Turbo) *(brought forward)*
 - [x] **Web UI** — enrol a voice, type text, hear it *(Tauri shell still pending)*
 - [x] **Phase 8** — Tauri `.app` bundle (launcher, not yet self-contained)
+- [x] **Phase 9** — Hindi: intelligible TTS (22/22), ASR at 4.8 % CER, no fine-tune needed
+
+Known gaps, stated rather than buried:
+
+- Hindi is **type-and-listen only** (RTF 3.40); the live loop stays English.
+- No acoustic echo cancellation — use headphones (Phase 4).
+- The desktop app is a launcher and still needs the checkout and its `.venv`.
+- Hindi *quality* beyond intelligibility is unverified by a native speaker.
 
 ## Rejected models
 
