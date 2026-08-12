@@ -49,6 +49,53 @@ SAMPLE_RATE = 24_000
 #: Hindi sentence came out as 25 seconds of audio that way.
 REFERENCE_CLIP_SECONDS = 12.0
 
+#: Flow matching starts from Gaussian noise, and f5_tts's `infer_process` does
+#: not expose a seed -- it draws from the global torch RNG. So the same sentence
+#: is a different utterance every call, and occasionally a bad one: the round-trip
+#: check saw one formal sentence score 100% on one run and 44% (transcribed as
+#: English) on the next, with no code change between them.
+#:
+#: Seeding per call makes output reproducible, which is what makes the round-trip
+#: eval usable as a regression gate and a bug report reproducible. Pass
+#: `seed=None` for a fresh voice each call, e.g. to retry a degenerate one.
+#:
+#: This does not *prevent* degeneration -- it makes it deterministic. Some
+#: sentences may need a different seed to come out cleanly.
+DEFAULT_SEED = 0
+
+
+#: Why this engine pins two innocuous-looking DiT flags.
+#:
+#: IndicF5 (March 2025) was built against an f5-tts whose attention applied the
+#: rotary embedding to the *flat* [b, n, 1024] projection and only then split it
+#: into 16 heads of 64. `apply_rotary_pos_emb` rotates `t[..., :freqs.shape[-1]]`,
+#: i.e. channels 0:64 -- which after the reshape are exactly head 0. So the
+#: model was trained with rope on ONE head.
+#:
+#: Current f5-tts (1.1.x) splits heads *first* and rotates all 16, and its text
+#: embedding masks padding through the ConvNeXt blocks (`mask_padding=True`),
+#: which did not exist in the old version.
+#:
+#: Every tensor still loads -- 364/364 keys, no missing, no unexpected -- because
+#: the *shapes* did not change, only where the positional signal lands. The
+#: symptom is therefore not a crash but confident babble in a random language:
+#: the same Hindi sentence came back from Whisper as Arabic, and previously as
+#: Indonesian and Welsh.
+#:
+#: `pe_attn_head=1` restores rope-on-head-0; `text_mask_padding=False` restores
+#: the unmasked text path. Measured by round-trip transcription (synthesize,
+#: then Whisper the result back) on the same Hindi sentence:
+#:
+#:   pe_attn_head=None, mask=True   ->   0% overlap, detected Arabic   (babble)
+#:   pe_attn_head=1,    mask=True   ->  55% overlap, detected Hindi    (garbled)
+#:   pe_attn_head=1,    mask=False  ->  92% overlap, detected Hindi    (correct)
+#:
+#: Both flags are needed; either alone is not enough. This is why an earlier
+#: pass that flipped only `text_mask_padding` concluded it made no difference.
+#:
+#: Verify with: uv run python -m voiceagent.eval.roundtrip <wav> "<expected>" hi
+OLD_SEMANTICS = "pe_attn_head=1, text_mask_padding=False"
+
 
 class IndicTTSAccessError(RuntimeError):
     """Raised when the model is gated and the machine is not authenticated."""
@@ -76,8 +123,10 @@ class IndicTTSEngine(TTSEngine):
         reference_text: str = "",
         reference_sample_rate: int = 24_000,
         speed: float = 1.0,
+        seed: int | None = DEFAULT_SEED,
     ) -> None:
         self.repo = repo
+        self.seed = seed
         #: IndicF5 is a cloning model: it needs a reference clip plus that
         #: clip's transcript to condition on.
         self.reference_audio = reference_audio
@@ -130,10 +179,15 @@ class IndicTTSEngine(TTSEngine):
         vocab_char_map, vocab_size = get_tokenizer(vocab_path, "custom")
 
         # Architecture is fixed by the checkpoint; these are IndicF5's values.
+        # pe_attn_head and text_mask_padding are NOT cosmetic -- see
+        # OLD_SEMANTICS below. Without them this model emits fluent-sounding
+        # babble in a random language.
         model = CFM(
             transformer=DiT(
                 dim=1024, depth=22, heads=16, ff_mult=2, text_dim=512, conv_layers=4,
                 text_num_embeds=vocab_size, mel_dim=U.n_mel_channels,
+                pe_attn_head=1,
+                text_mask_padding=False,
             ),
             mel_spec_kwargs=dict(
                 n_fft=U.n_fft,
@@ -239,9 +293,15 @@ class IndicTTSEngine(TTSEngine):
         from pathlib import Path
 
         import soundfile as sf
+        import torch
         from f5_tts.infer.utils_infer import infer_process, preprocess_ref_audio_text
 
         self._require_reference()
+
+        # See DEFAULT_SEED: the sampler reads the global RNG, so this is the only
+        # place the seed can be set.
+        if self.seed is not None:
+            torch.manual_seed(self.seed)
 
         # f5_tts wants a reference *path*, so the (decrypted) clip is written to
         # a temp file that is removed as soon as inference returns -- the

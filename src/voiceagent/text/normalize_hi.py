@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import re
 
+from voiceagent.text.translit_en import transliterate
+
 # --- numbers --------------------------------------------------------------
 
 #: Every Hindi number 0-99 is irregular; there is no rule to generate them.
@@ -117,8 +119,13 @@ ABBREVIATIONS = {
 }
 
 
-def normalize(text: str) -> str:
-    """Convert a Hindi string into something a TTS model can read aloud."""
+def normalize(text: str, transliterate_latin: bool = True) -> str:
+    """Convert a Hindi string into something a TTS model can read aloud.
+
+    Set `transliterate_latin=False` to leave Latin-script words alone, for an
+    engine that can pronounce English natively. IndicF5 cannot -- it drops or
+    mangles them -- so the default rewrites them into Devanagari.
+    """
     if not text:
         return text
 
@@ -147,6 +154,12 @@ def normalize(text: str) -> str:
     )
     text = _GROUPED.sub(lambda m: number_to_hindi(int(m.group(0).replace(",", ""))), text)
     text = _PLAIN.sub(lambda m: number_to_hindi(int(m.group(0))), text)
+
+    # Last, because the number rules above match ASCII digits and the
+    # abbreviation table matches Devanagari -- neither should see Devanagari
+    # that this pass just produced from Latin letters.
+    if transliterate_latin:
+        text = transliterate(text)
 
     return re.sub(r"\s{2,}", " ", text).strip()
 

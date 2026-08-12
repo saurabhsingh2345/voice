@@ -113,10 +113,31 @@ def test_no_digits_survive():
         assert not any(ch.isdigit() for ch in normalize(raw)), raw
 
 
-def test_english_words_are_left_alone():
-    """Code-mixed text must keep its English; this is not a translator."""
+def test_english_words_are_transliterated_not_translated():
+    """Code-mixed English is rewritten in Devanagari, keeping the same words.
+
+    This changed deliberately. The old behaviour left Latin script in place, on
+    the assumption that the TTS could read it. Measured by round-trip
+    transcription, IndicF5 cannot: every code-mixed sentence lost or mangled its
+    English words ("meeting" vanished, "calendar" came back as एउननर) while the
+    surrounding Hindi scored 88-100%. The words are still the English ones --
+    "email" is ईमेल, not the Hindi डाक -- so this is transliteration, not
+    translation.
+    """
     out = normalize("मैंने अभी email भेज दिया है, please check कर लेना।")
-    assert "email" in out and "please check" in out
+    assert "ईमेल" in out and "प्लीज़ चेक" in out
+    assert "डाक" not in out and "संदेश" not in out
+
+
+def test_no_latin_survives_for_the_indic_engine():
+    """Latin left in the string is silently dropped by IndicF5, not spoken."""
+    out = normalize("मेरा laptop बहुत slow चल रहा है।")
+    assert not any("a" <= ch.lower() <= "z" for ch in out), out
+
+
+def test_latin_can_be_preserved_for_an_engine_that_reads_it():
+    out = normalize("मेरा laptop बहुत slow है।", transliterate_latin=False)
+    assert "laptop" in out and "slow" in out
 
 
 def test_output_stays_devanagari():
