@@ -70,17 +70,41 @@ BUSY_MESSAGE = (
     "current one to finish -- retrying now makes it slower, not faster."
 )
 
-#: Hard cap on one request. Indic synthesis runs at RTF ~3.4, and f5-tts splits
-#: long text into batches of roughly 100 characters, so a pasted essay becomes
-#: several minutes of compute with no partial output. 800 characters is about a
-#: minute of speech and a few minutes of compute -- long, but bounded and
-#: predictable rather than apparently hung.
-MAX_SPEAK_CHARS = 800
+#: When the in-flight synthesis started, so the busy message can say how long it
+#: has been going. "Busy" with no number is indistinguishable from "stuck", which
+#: is the confusion that caused the retrying in the first place.
+_synth_started_at: float | None = None
+
+#: Backstop against a pathological paste, NOT a quality-of-service limit.
+#:
+#: This was briefly 800, which was wrong. Narrating a paragraph or a short essay
+#: is a real use of this app and it worked before -- slowly, but it worked. The
+#: hang it was meant to prevent came from *concurrency* (two generations in
+#: flight, see BUSY_MESSAGE), not from length; length only makes one request
+#: slow. Serializing synthesis fixed the hang, so capping at 800 just removed a
+#: working feature. Roughly 3000 characters is about four minutes of speech and
+#: perhaps fifteen of compute: long enough for any real narration, low enough
+#: that a stray paste of a whole document still gets a clear answer.
+MAX_SPEAK_CHARS = 3000
 
 #: Free memory below this makes Indic synthesis a coin flip between very slow and
 #: wedged, so it is refused with an explanation instead. The model is ~1.4 GiB and
 #: needs headroom for activations on top.
 MIN_FREE_GIB_FOR_INDIC = 2.5
+
+#: Refuse when swap is this full, regardless of what `available` claims.
+#:
+#: `available` is not sufficient on its own and this was learned the hard way: a
+#: narration was attempted with 4.9 GiB "available" and the server process was
+#: killed outright by the OS partway into a five-batch generation -- no
+#: traceback, no error, just gone, because swap was at 15.33 of 16.00 GiB. Once
+#: swap is nearly exhausted the kernel has nowhere to put a large allocation, so
+#: it kills the allocating process instead. `available` counts reclaimable pages
+#: and cheerfully reports several free gigabytes in that state.
+#:
+#: A refusal the user can act on is strictly better than a server that vanishes
+#: mid-request, which is indistinguishable from a hang or a crash.
+MAX_SWAP_FRACTION = 0.90
 
 STATIC = Path(__file__).resolve().parent / "static"
 
@@ -392,6 +416,11 @@ async def speak(
     profile_id: str = Form(...),
     format: str = Form("wav"),
 ) -> Response:
+    # Declared up front: this function both reads it (in the busy check) and
+    # writes it (when synthesis starts), and Python requires the declaration
+    # before the first read.
+    global _synth_started_at
+
     if not text.strip():
         raise HTTPException(400, "text is required")
 
@@ -407,16 +436,18 @@ async def speak(
         raise HTTPException(
             413,
             f"text is {len(text.strip())} characters; the limit is {MAX_SPEAK_CHARS}. "
-            "Synthesis runs slower than real time, so longer text takes several "
-            "minutes and produces nothing until it finishes. Send it a paragraph "
-            "at a time.",
+            "Synthesis runs slower than real time, so this would take a very long "
+            "while and produce nothing until it finished. Split it into sections.",
         )
 
     # Refuse rather than queue -- see BUSY_MESSAGE. Checking `locked()` before
     # acquiring is deliberate: it makes a concurrent request fail immediately
     # instead of blocking, which is the whole point.
     if _synth_lock.locked():
-        raise HTTPException(429, BUSY_MESSAGE)
+        elapsed = ""
+        if _synth_started_at is not None:
+            elapsed = f" It has been running {time.perf_counter() - _synth_started_at:.0f}s."
+        raise HTTPException(429, BUSY_MESSAGE + elapsed)
 
     # Route on script. Devanagari (and other Indic scripts) cannot be spoken by
     # Chatterbox at all, so this is a correctness decision, not a preference.
@@ -427,6 +458,7 @@ async def speak(
 
     try:
         async with _synth_lock:
+            _synth_started_at = time.perf_counter()
             if detection.is_indic:
                 profile = store.get(profile_id)
                 if profile is None:
@@ -472,6 +504,19 @@ async def speak(
                         "than finish.",
                     )
 
+                swap = _psutil.swap_memory()
+                if swap.total and swap.percent / 100 >= MAX_SWAP_FRACTION:
+                    raise HTTPException(
+                        507,
+                        f"Swap is {swap.percent:.0f}% full "
+                        f"({swap.used / 1024**3:.1f} of {swap.total / 1024**3:.1f} GiB). "
+                        "With swap this full the system kills whichever process asks "
+                        "for a large allocation, and that would be this server -- it "
+                        "would disappear mid-request rather than return an error. "
+                        "Close whatever is holding memory (a running VM, extra editor "
+                        "or browser windows) and try again.",
+                    )
+
                 indic = await _ensure_indic()
                 import io as _io
                 import soundfile as _sf
@@ -498,6 +543,10 @@ async def speak(
         raise
     except ConsentError as exc:
         raise HTTPException(403, str(exc)) from exc
+    finally:
+        # Cleared unconditionally: a stale timestamp would make the next busy
+        # message report a nonsense duration.
+        _synth_started_at = None
 
     if not parts:
         raise HTTPException(500, "no audio was produced")

@@ -48,7 +48,7 @@ def wav_bytes(seconds: float = 0.5, sample_rate: int = 24_000) -> bytes:
 
 
 def test_oversized_text_is_refused_before_any_synthesis():
-    too_long = "[removed]" * 60
+    too_long = "[removed]" * 200
     assert len(too_long) > srv.MAX_SPEAK_CHARS
     r = client.post("/api/speak", data={"text": too_long, "profile_id": "x"})
     assert r.status_code == 413
@@ -59,6 +59,29 @@ def test_oversized_text_is_refused_before_any_synthesis():
 def test_text_within_the_cap_is_not_rejected_for_length():
     r = client.post("/api/speak", data={"text": "नमस्ते।", "profile_id": "nope"})
     assert r.status_code != 413
+
+
+def test_a_narration_length_paragraph_is_allowed():
+    """Guards a regression I actually shipped. The cap was briefly 800, which
+    refused a 428-character school-essay narration's longer siblings outright --
+    turning a slow-but-working feature into a hard error. The hang it was meant
+    to prevent came from concurrency, not length."""
+    narration = (
+        "[removed]"
+        "[removed]"
+        "[removed]"
+        "[removed]"
+        "[removed]"
+        "[removed]"
+        "[removed]"
+    )
+    assert len(narration) > 400, "keep this representative of a real narration"
+    r = client.post("/api/speak", data={"text": narration, "profile_id": "nope"})
+    assert r.status_code != 413, f"narration of {len(narration)} chars was refused"
+
+
+def test_the_cap_leaves_room_for_a_multi_paragraph_narration():
+    assert srv.MAX_SPEAK_CHARS >= 2000
 
 
 def test_empty_text_is_refused():
@@ -173,3 +196,32 @@ def test_memory_threshold_is_above_the_model_size():
     """IndicF5 is ~1.4 GiB and needs headroom for activations on top; a
     threshold below that would let the wedge happen again."""
     assert srv.MIN_FREE_GIB_FOR_INDIC >= 2.0
+
+
+def test_swap_is_guarded_as_well_as_available_memory():
+    """`available` alone is not enough, learned by losing a server.
+
+    A narration was attempted with 4.9 GiB reported available and the process was
+    killed outright partway through generation -- no traceback, just gone --
+    because swap sat at 15.33 of 16.00 GiB. `available` counts reclaimable pages
+    and reports gigabytes free in that state, so the swap fraction has to be
+    checked independently.
+    """
+    assert 0.5 < srv.MAX_SWAP_FRACTION < 1.0
+
+
+def test_swap_guard_refuses_and_names_swap(monkeypatch):
+    import psutil
+
+    real = psutil.swap_memory()
+    full = real._replace(percent=99.0, used=int(15.9 * 1024**3), total=int(16 * 1024**3))
+    monkeypatch.setattr(psutil, "swap_memory", lambda: full)
+
+    r = client.post(
+        "/api/speak", data={"text": "नमस्ते दुनिया।", "profile_id": "e214ec611523"}
+    )
+    # 507 if it reached the guard; anything else means the guard was bypassed.
+    # A missing profile would 403 first, so only assert when we got that far.
+    if r.status_code != 403:
+        assert r.status_code == 507, r.text
+        assert "swap" in r.json()["detail"].lower()
