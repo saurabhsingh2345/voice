@@ -46,6 +46,42 @@ engine = ChatterboxCloneEngine(store=store)
 _indic_engine = None
 _indic_lock = asyncio.Lock()
 
+#: Serializes synthesis. This is a correctness requirement before it is a
+#: performance one: both engines are single shared mutable objects, and the Indic
+#: path calls `set_reference()` on the shared instance. Two overlapping requests
+#: for different voices would have the second overwrite the first's reference,
+#: so a request could be answered in someone else's voice.
+#:
+#: It also prevents the failure that actually bit: on an 18 GiB machine with
+#: ~1.5 GiB free, two concurrent Indic requests thrash. Observed state was a
+#: process in uninterruptible I/O wait at 0.3% CPU with RSS *shrinking* (94 ->
+#: 63 MiB, the model paging out), 68 MiB free against 14.9 GiB of swap, and zero
+#: progress. Neither request could finish.
+_synth_lock = asyncio.Lock()
+
+#: A second request while one is running is refused rather than queued. Queueing
+#: is what made this dangerous: synthesis is slow enough (RTF ~3.4 for Indic) to
+#: look hung, so the natural response is to click again, and every extra click
+#: made the machine slower rather than the answer sooner. Refusing turns that
+#: into "still working" instead of a death spiral.
+BUSY_MESSAGE = (
+    "Still synthesizing the previous request. Only one runs at a time: the model "
+    "is a single shared instance and this machine cannot fit two. Wait for the "
+    "current one to finish -- retrying now makes it slower, not faster."
+)
+
+#: Hard cap on one request. Indic synthesis runs at RTF ~3.4, and f5-tts splits
+#: long text into batches of roughly 100 characters, so a pasted essay becomes
+#: several minutes of compute with no partial output. 800 characters is about a
+#: minute of speech and a few minutes of compute -- long, but bounded and
+#: predictable rather than apparently hung.
+MAX_SPEAK_CHARS = 800
+
+#: Free memory below this makes Indic synthesis a coin flip between very slow and
+#: wedged, so it is refused with an explanation instead. The model is ~1.4 GiB and
+#: needs headroom for activations on top.
+MIN_FREE_GIB_FOR_INDIC = 2.5
+
 STATIC = Path(__file__).resolve().parent / "static"
 
 #: The model is loaded on first use, not at import, so the page opens instantly.
@@ -305,6 +341,48 @@ async def delete_all() -> dict:
     return {"deleted_profiles": store.delete_all()}
 
 
+@app.post("/api/encode")
+async def encode(audio: UploadFile, format: str = Form("flac")) -> Response:
+    """Re-encode already-synthesized audio, without generating it again.
+
+    This exists to kill a real hazard. The Download button used to re-POST the
+    text to /api/speak for any format other than WebM, so downloading a FLAC
+    meant paying for a second full synthesis -- and because its button-disable
+    was independent of the Speak button's, clicking Download while Speak was
+    still running put two generations in flight at once. On an 18 GiB machine
+    that is what wedged the server: both requests thrashed in swap and neither
+    finished.
+
+    The old comment justified it with "re-synthesizing would give different
+    audio", which was true of an unseeded sampler. It no longer is -- the Indic
+    engine seeds per call -- but regenerating identical audio for a container
+    change was always wasted work. Encoding is pure CPU and takes milliseconds,
+    so it does not need the synthesis lock.
+    """
+    fmt = format.lower()
+    if fmt not in OUTPUT_FORMATS:
+        raise HTTPException(
+            400, f"unsupported format {fmt!r}; choose one of {sorted(OUTPUT_FORMATS)}"
+        )
+
+    raw = await audio.read()
+    if not raw:
+        raise HTTPException(400, "audio is required")
+    try:
+        samples, sample_rate = sf.read(io.BytesIO(raw), dtype="float32")
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, f"could not decode the uploaded audio: {exc}") from exc
+    if samples.ndim > 1:
+        samples = samples.mean(axis=1)
+
+    payload, media_type, ext = _encode(samples, sample_rate, fmt)
+    return Response(
+        content=payload,
+        media_type=media_type,
+        headers={"X-Audio-Format": ext, "X-Audio-Seconds": f"{len(samples)/sample_rate:.2f}"},
+    )
+
+
 # --- synthesis ------------------------------------------------------------
 
 
@@ -325,6 +403,21 @@ async def speak(
             400, f"unsupported format {fmt!r}; choose one of {sorted(OUTPUT_FORMATS)}"
         )
 
+    if len(text.strip()) > MAX_SPEAK_CHARS:
+        raise HTTPException(
+            413,
+            f"text is {len(text.strip())} characters; the limit is {MAX_SPEAK_CHARS}. "
+            "Synthesis runs slower than real time, so longer text takes several "
+            "minutes and produces nothing until it finishes. Send it a paragraph "
+            "at a time.",
+        )
+
+    # Refuse rather than queue -- see BUSY_MESSAGE. Checking `locked()` before
+    # acquiring is deliberate: it makes a concurrent request fail immediately
+    # instead of blocking, which is the whole point.
+    if _synth_lock.locked():
+        raise HTTPException(429, BUSY_MESSAGE)
+
     # Route on script. Devanagari (and other Indic scripts) cannot be spoken by
     # Chatterbox at all, so this is a correctness decision, not a preference.
     detection = detect(text)
@@ -333,57 +426,74 @@ async def speak(
     started = time.perf_counter()
 
     try:
-        if detection.is_indic:
-            profile = store.get(profile_id)
-            if profile is None:
-                raise HTTPException(403, "no such consented voice profile")
-            if not profile.reference_text:
-                raise HTTPException(
-                    400,
-                    "This voice has no reference transcript. IndicF5 needs to know "
-                    "what the reference clip says. Add a transcript for this voice "
-                    "and try again.",
+        async with _synth_lock:
+            if detection.is_indic:
+                profile = store.get(profile_id)
+                if profile is None:
+                    raise HTTPException(403, "no such consented voice profile")
+                if not profile.reference_text:
+                    raise HTTPException(
+                        400,
+                        "This voice has no reference transcript. IndicF5 needs to know "
+                        "what the reference clip says. Add a transcript for this voice "
+                        "and try again.",
+                    )
+
+                # A transcript in the wrong script means it does not describe the
+                # audio -- the usual cause is auto-transcribing Hindi speech with
+                # the English-only STT, which invents plausible English words. F5
+                # conditions on that text, so the output becomes babble rather than
+                # failing. Refuse instead of synthesizing nonsense.
+                ref_detect = detect(profile.reference_text)
+                if not ref_detect.is_indic:
+                    raise HTTPException(
+                        400,
+                        "The reference transcript for this voice is in Latin script, but "
+                        "you asked for Indic output. If the clip is spoken in Hindi, type "
+                        "the Devanagari transcript by hand -- Auto-transcribe uses an "
+                        "English-only model and will invent English words for Hindi audio, "
+                        "which makes the synthesis unintelligible. If the clip really is "
+                        "English, record a new one in Hindi for native results.",
+                    )
+
+                # Refuse when the machine plainly cannot do it. Without this the
+                # request does not fail, it wedges: the model pages out to swap
+                # mid-inference and neither finishes nor errors. A message the user
+                # can act on beats a ten-minute hang.
+                import psutil as _psutil
+
+                free_gib = _psutil.virtual_memory().available / 1024**3
+                if free_gib < MIN_FREE_GIB_FOR_INDIC:
+                    raise HTTPException(
+                        507,
+                        f"Only {free_gib:.1f} GiB of memory is free and Hindi synthesis "
+                        f"needs about {MIN_FREE_GIB_FOR_INDIC:.1f} GiB. Close some apps "
+                        "and try again -- starting anyway would swap and hang rather "
+                        "than finish.",
+                    )
+
+                indic = await _ensure_indic()
+                import io as _io
+                import soundfile as _sf
+
+                ref_audio, ref_sr = _sf.read(
+                    _io.BytesIO(store.reference_audio(profile_id)), dtype="float32"
                 )
+                if ref_audio.ndim > 1:
+                    ref_audio = ref_audio.mean(axis=1)
+                indic.set_reference(ref_audio, profile.reference_text, ref_sr)
 
-            # A transcript in the wrong script means it does not describe the
-            # audio -- the usual cause is auto-transcribing Hindi speech with
-            # the English-only STT, which invents plausible English words. F5
-            # conditions on that text, so the output becomes babble rather than
-            # failing. Refuse instead of synthesizing nonsense.
-            ref_detect = detect(profile.reference_text)
-            if not ref_detect.is_indic:
-                raise HTTPException(
-                    400,
-                    "The reference transcript for this voice is in Latin script, but "
-                    "you asked for Indic output. If the clip is spoken in Hindi, type "
-                    "the Devanagari transcript by hand -- Auto-transcribe uses an "
-                    "English-only model and will invent English words for Hindi audio, "
-                    "which makes the synthesis unintelligible. If the clip really is "
-                    "English, record a new one in Hindi for native results.",
-                )
-
-            indic = await _ensure_indic()
-            import io as _io
-            import soundfile as _sf
-
-            ref_audio, ref_sr = _sf.read(
-                _io.BytesIO(store.reference_audio(profile_id)), dtype="float32"
-            )
-            if ref_audio.ndim > 1:
-                ref_audio = ref_audio.mean(axis=1)
-            indic.set_reference(ref_audio, profile.reference_text, ref_sr)
-
-            # Numbers and dates must become Hindi words before synthesis, or the
-            # model reads them in whatever language it defaults to.
-            spoken = normalize_hi(spoken)
-            started = time.perf_counter()
-            async for chunk in indic.synthesize(spoken):
-                parts.append(chunk.samples)
-        else:
-            await _ensure_loaded()
-            started = time.perf_counter()
-            async for chunk in engine.synthesize(spoken, voice=profile_id):
-                parts.append(chunk.samples)
+                # Numbers and dates must become Hindi words before synthesis, or the
+                # model reads them in whatever language it defaults to.
+                spoken = normalize_hi(spoken)
+                started = time.perf_counter()
+                async for chunk in indic.synthesize(spoken):
+                    parts.append(chunk.samples)
+            else:
+                await _ensure_loaded()
+                started = time.perf_counter()
+                async for chunk in engine.synthesize(spoken, voice=profile_id):
+                    parts.append(chunk.samples)
     except HTTPException:
         raise
     except ConsentError as exc:

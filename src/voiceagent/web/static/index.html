@@ -432,14 +432,16 @@ $("download").onclick = async () => {
       const name = saveBlob(blob, "webm");
       setStatus($("speakStatus"), `Saved ${name} (${(blob.size / 1024).toFixed(0)} KB).`, "ok");
     } else {
-      // Re-synthesizing would give different audio, so ask the server to
-      // re-encode... it has no cache, so we send the same text again.
+      // Re-encode the audio we already have. This used to re-POST the text to
+      // /api/speak, which paid for a whole second synthesis just to change
+      // container -- and if Speak was still running, put two generations in
+      // flight and wedged the machine in swap.
+      if (!lastWav) throw new Error("nothing synthesized yet");
       setStatus($("speakStatus"), `Encoding ${fmt.toUpperCase()}…`);
       const fd = new FormData();
-      fd.append("text", lastText || $("text").value);
-      fd.append("profile_id", $("voiceSel").value);
+      fd.append("audio", lastWav, "audio.wav");
       fd.append("format", fmt);
-      const res = await fetch("/api/speak", { method: "POST", body: fd });
+      const res = await fetch("/api/encode", { method: "POST", body: fd });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || "failed");
       const blob = await res.blob();
       const name = saveBlob(blob, res.headers.get("X-Audio-Format") || fmt);

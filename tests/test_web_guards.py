@@ -1,0 +1,175 @@
+"""Guards that keep one slow request from wedging the machine.
+
+These cover a real incident, not a hypothetical. A pasted Hindi essay was
+synthesized while a second request was already in flight, on an 18 GiB machine
+with ~1.5 GiB free. Both needed the single shared model, both thrashed in swap,
+and neither finished: the process sat in uninterruptible I/O wait at 0.3% CPU
+with its RSS *shrinking* (94 -> 63 MiB, the model paging out), 68 MiB free
+against 14.9 GiB of swap, no log output, no error.
+
+Three things caused it and each is asserted here:
+
+  1. Synthesis was not serialized, though both engines are single shared mutable
+     objects -- the Indic path calls set_reference() on the shared instance.
+  2. The Download button re-POSTed to /api/speak for any non-WebM format, so a
+     download was a whole second synthesis, with its own independent
+     button-disable. That is how two got in flight.
+  3. There was no cap on input length, so a paste became several minutes of
+     compute producing nothing until it finished.
+
+No model is loaded: every path here is rejected before synthesis, or is pure
+CPU encoding.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import io
+
+import numpy as np
+import pytest
+import soundfile as sf
+from fastapi.testclient import TestClient
+
+from voiceagent.web import server as srv
+
+client = TestClient(srv.app)
+
+
+def wav_bytes(seconds: float = 0.5, sample_rate: int = 24_000) -> bytes:
+    t = np.linspace(0, seconds, int(seconds * sample_rate), endpoint=False)
+    tone = (0.2 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+    buf = io.BytesIO()
+    sf.write(buf, tone, sample_rate, format="WAV", subtype="PCM_16")
+    return buf.getvalue()
+
+
+# --- 1. input length ------------------------------------------------------
+
+
+def test_oversized_text_is_refused_before_any_synthesis():
+    too_long = "[removed]" * 60
+    assert len(too_long) > srv.MAX_SPEAK_CHARS
+    r = client.post("/api/speak", data={"text": too_long, "profile_id": "x"})
+    assert r.status_code == 413
+    # The message has to say what to do, not just that it failed.
+    assert str(srv.MAX_SPEAK_CHARS) in r.json()["detail"]
+
+
+def test_text_within_the_cap_is_not_rejected_for_length():
+    r = client.post("/api/speak", data={"text": "नमस्ते।", "profile_id": "nope"})
+    assert r.status_code != 413
+
+
+def test_empty_text_is_refused():
+    assert client.post("/api/speak", data={"text": "  ", "profile_id": "x"}).status_code == 400
+
+
+# --- 2. concurrency -------------------------------------------------------
+
+
+def test_a_second_request_is_refused_while_one_is_running():
+    """Refused, not queued. Queueing is what let clicks pile up and made the
+    machine slower rather than the answer sooner."""
+    async def hold():
+        async with srv._synth_lock:
+            return client.post(
+                "/api/speak", data={"text": "नमस्ते।", "profile_id": "any"}
+            )
+
+    r = asyncio.run(hold())
+    assert r.status_code == 429
+    assert "at a time" in r.json()["detail"].lower()
+
+
+def test_the_lock_is_released_afterwards():
+    """A guard that leaks the lock would refuse every later request."""
+    assert not srv._synth_lock.locked()
+    client.post("/api/speak", data={"text": "नमस्ते।", "profile_id": "nope"})
+    assert not srv._synth_lock.locked()
+
+
+def test_format_is_validated_before_the_busy_check_wastes_a_slot():
+    r = client.post(
+        "/api/speak", data={"text": "नमस्ते।", "profile_id": "x", "format": "mp3x"}
+    )
+    assert r.status_code == 400
+    assert "mp3x" in r.json()["detail"]
+
+
+# --- 3. downloads must not re-synthesize ----------------------------------
+
+
+@pytest.mark.parametrize("fmt,magic", [("flac", b"fLaC"), ("opus", b"OggS")])
+def test_encode_reencodes_without_synthesizing(fmt, magic):
+    r = client.post(
+        "/api/encode", files={"audio": ("a.wav", wav_bytes(), "audio/wav")}, data={"format": fmt}
+    )
+    assert r.status_code == 200, r.text
+    assert r.content.startswith(magic)
+    assert r.headers["X-Audio-Format"] == fmt
+
+
+def test_encode_preserves_duration():
+    r = client.post(
+        "/api/encode",
+        files={"audio": ("a.wav", wav_bytes(seconds=1.5), "audio/wav")},
+        data={"format": "flac"},
+    )
+    assert float(r.headers["X-Audio-Seconds"]) == pytest.approx(1.5, abs=0.05)
+
+
+def test_encode_rejects_a_bad_format():
+    r = client.post(
+        "/api/encode", files={"audio": ("a.wav", wav_bytes(), "audio/wav")}, data={"format": "mp3x"}
+    )
+    assert r.status_code == 400
+
+
+def test_encode_rejects_undecodable_audio():
+    r = client.post(
+        "/api/encode", files={"audio": ("a.wav", b"not audio", "audio/wav")}, data={"format": "flac"}
+    )
+    assert r.status_code == 400
+
+
+def test_encode_does_not_take_the_synthesis_lock():
+    """Encoding is milliseconds of CPU; making it wait behind a 40s synthesis
+    would reintroduce the stall for no reason."""
+    async def hold():
+        async with srv._synth_lock:
+            return client.post(
+                "/api/encode",
+                files={"audio": ("a.wav", wav_bytes(), "audio/wav")},
+                data={"format": "flac"},
+            )
+
+    assert asyncio.run(hold()).status_code == 200
+
+
+def test_the_ui_download_path_no_longer_posts_to_speak():
+    """The bug was in the page, so assert on the page.
+
+    Matches the fetch call rather than the bare path: the fix left a comment
+    explaining the old behaviour, and a plain substring search matches its own
+    explanation.
+    """
+    import re
+    from pathlib import Path
+
+    page = (Path(srv.__file__).parent / "static" / "index.html").read_text()
+    download = page[page.index('$("download").onclick'):]
+    download = download[: download.index("\n};")]
+    # Strip // comments so prose about the old bug cannot satisfy or break this.
+    code = re.sub(r"//[^\n]*", "", download)
+    assert 'fetch("/api/encode"' in code
+    assert "/api/speak" not in code
+
+
+# --- memory guard ---------------------------------------------------------
+
+
+def test_memory_threshold_is_above_the_model_size():
+    """IndicF5 is ~1.4 GiB and needs headroom for activations on top; a
+    threshold below that would let the wedge happen again."""
+    assert srv.MIN_FREE_GIB_FOR_INDIC >= 2.0
