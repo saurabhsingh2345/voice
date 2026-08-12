@@ -48,7 +48,7 @@ def wav_bytes(seconds: float = 0.5, sample_rate: int = 24_000) -> bytes:
 
 
 def test_oversized_text_is_refused_before_any_synthesis():
-    too_long = "[removed]" * 200
+    too_long = "यह एक परीक्षण वाक्य है। " * 200
     assert len(too_long) > srv.MAX_SPEAK_CHARS
     r = client.post("/api/speak", data={"text": too_long, "profile_id": "x"})
     assert r.status_code == 413
@@ -63,18 +63,16 @@ def test_text_within_the_cap_is_not_rejected_for_length():
 
 def test_a_narration_length_paragraph_is_allowed():
     """Guards a regression I actually shipped. The cap was briefly 800, which
-    refused a 428-character school-essay narration's longer siblings outright --
-    turning a slow-but-working feature into a hard error. The hang it was meant
-    to prevent came from concurrency, not length."""
-    narration = (
-        "[removed]"
-        "[removed]"
-        "[removed]"
-        "[removed]"
-        "[removed]"
-        "[removed]"
-        "[removed]"
-    )
+    refused narration-length text outright -- turning a slow-but-working feature
+    into a hard error. The hang it was meant to prevent came from concurrency,
+    not length.
+
+    Built from the project's own test sentences rather than pasted user text, so
+    no one's recorded or dictated content ends up in the repository.
+    """
+    from voiceagent.eval import sentences as S
+
+    narration = " ".join(s.text for s in S.FORMAL + S.COLLOQUIAL)
     assert len(narration) > 400, "keep this representative of a real narration"
     r = client.post("/api/speak", data={"text": narration, "profile_id": "nope"})
     assert r.status_code != 413, f"narration of {len(narration)} chars was refused"
