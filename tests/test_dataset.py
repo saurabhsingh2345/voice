@@ -37,7 +37,22 @@ def wav_bytes(seconds: float = 3.0, sample_rate: int = 24_000) -> bytes:
 
 
 @pytest.fixture
-def store(tmp_path):
+def store(tmp_path, monkeypatch):
+    """A store in a temp dir with the Keychain stubbed, as test_consent.py does.
+
+    The stub is the point, not a convenience. Without it these tests encrypt temp
+    files with the *real* Keychain key, and any test reaching `delete_all()` --
+    which calls `_drop_key()` -- would destroy the key protecting the user's actual
+    recordings, making every real clip permanently unreadable. Stubbing per-test
+    worked only as long as everyone remembered to; stubbing in the fixture removes
+    the whole class.
+    """
+    slot: dict[str, str] = {}
+    import keyring
+
+    monkeypatch.setattr(keyring, "get_password", lambda s_, u: slot.get(f"{s_}/{u}"))
+    monkeypatch.setattr(keyring, "set_password", lambda s_, u, v: slot.update({f"{s_}/{u}": v}))
+    monkeypatch.setattr(keyring, "delete_password", lambda s_, u: slot.pop(f"{s_}/{u}", None))
     return VoiceProfileStore(root=tmp_path)
 
 
@@ -82,8 +97,7 @@ def test_deleting_the_voice_deletes_its_training_clips(dataset, store, profile):
     assert dataset.clips(profile.profile_id) == []
 
 
-def test_delete_all_my_data_deletes_every_clip(dataset, store, profile, monkeypatch):
-    monkeypatch.setattr("voiceagent.voice_clone.store._drop_key", lambda: None)
+def test_delete_all_my_data_deletes_every_clip(dataset, store, profile):
     dataset.add_clip(profile.profile_id, wav_bytes(), "एक।", 3.0, 24_000)
     dataset.add_clip(profile.profile_id, wav_bytes(), "दो।", 3.0, 24_000)
 
@@ -304,3 +318,63 @@ def test_the_max_segment_is_shorter_than_the_hand_added_clip_cap():
     from voiceagent.voice_clone.dataset import MAX_CLIP_SECONDS, MAX_SEGMENT_SECONDS
 
     assert MAX_SEGMENT_SECONDS < MAX_CLIP_SECONDS
+
+
+# --- merging two profiles of the same speaker ------------------------------
+
+
+@pytest.fixture
+def second_profile(store):
+    return store.save(
+        ConsentRecord.create("Saurabh", PHRASE), wav_bytes(6.0), 6.0, 24_000, reference_text="नमस्ते।"
+    )
+
+
+def test_clips_move_between_profiles_of_the_same_speaker(dataset, profile, second_profile):
+    """The selector reset on reload and split one session's recordings across two
+    profiles: 26 and 27 clips, neither enough to train on, together most of the way."""
+    for i in range(3):
+        dataset.add_clip(profile.profile_id, wav_bytes(4.0), f"वाक्य {i}।", 4.0, 24_000)
+
+    moved = dataset.move_clips(profile.profile_id, second_profile.profile_id)
+    assert moved == 3
+    assert dataset.clips(profile.profile_id) == []
+    assert dataset.summary(second_profile.profile_id).clip_count == 3
+
+
+def test_moving_preserves_the_audio_and_the_transcript(dataset, profile, second_profile):
+    raw = wav_bytes(4.0)
+    dataset.add_clip(profile.profile_id, raw, "मूल पाठ।", 4.0, 24_000)
+    dataset.move_clips(profile.profile_id, second_profile.profile_id)
+
+    moved = dataset.clips(second_profile.profile_id)[0]
+    assert moved.text == "मूल पाठ।"
+    assert moved.profile_id == second_profile.profile_id, "the record must follow the move"
+    assert dataset.audio(second_profile.profile_id, moved.clip_id) == raw
+
+
+def test_moving_into_an_unconsented_profile_is_refused(dataset, profile):
+    dataset.add_clip(profile.profile_id, wav_bytes(4.0), "एक।", 4.0, 24_000)
+    with pytest.raises(ConsentError):
+        dataset.move_clips(profile.profile_id, "nonexistent")
+    assert dataset.summary(profile.profile_id).clip_count == 1, "a refused move must change nothing"
+
+
+def test_moving_out_of_an_unconsented_profile_is_refused(dataset, second_profile):
+    with pytest.raises(ConsentError):
+        dataset.move_clips("nonexistent", second_profile.profile_id)
+
+
+def test_merging_a_profile_into_itself_is_refused(dataset, profile):
+    with pytest.raises(DatasetError):
+        dataset.move_clips(profile.profile_id, profile.profile_id)
+
+
+def test_consent_records_are_not_rewritten_by_a_merge(dataset, store, profile, second_profile):
+    """Merging clips does not merge consent. Renaming whose name is on a consent
+    record to tidy a directory would be the wrong kind of convenient."""
+    dataset.add_clip(profile.profile_id, wav_bytes(4.0), "एक।", 4.0, 24_000)
+    dataset.move_clips(profile.profile_id, second_profile.profile_id)
+
+    assert store.get(profile.profile_id).consent.speaker_name == "Atul"
+    assert store.get(second_profile.profile_id).consent.speaker_name == "Saurabh"

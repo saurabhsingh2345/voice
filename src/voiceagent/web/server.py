@@ -861,6 +861,28 @@ async def remove_clip(profile_id: str, clip_id: str) -> dict:
             "total_seconds": summary.total_seconds}
 
 
+@app.post("/api/dataset/{profile_id}/merge-from")
+async def merge_dataset(profile_id: str, source: str = Form(...)) -> dict:
+    """Move every clip from `source` into this profile. Same speaker, two profiles.
+
+    Consent records are not merged and not rewritten -- see
+    VoiceDataset.move_clips. This moves training clips only.
+    """
+    try:
+        moved = dataset.move_clips(source, profile_id)
+    except ConsentError as exc:
+        raise HTTPException(403, str(exc)) from exc
+    except DatasetError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    summary = dataset.summary(profile_id)
+    return {
+        "moved": moved,
+        "clip_count": summary.clip_count,
+        "total_seconds": summary.total_seconds,
+        "usable": summary.usable,
+    }
+
+
 @app.post("/api/dataset/{profile_id}/export")
 async def export_dataset(profile_id: str, language: str = Form("")) -> dict:
     """Write a plaintext training set and return the commands to train on it.

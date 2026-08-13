@@ -301,6 +301,58 @@ class VoiceDataset:
             shutil.rmtree(directory)
         return count
 
+    def move_clips(self, source: str, destination: str) -> int:
+        """Move every clip from one profile to another. Same person, two profiles.
+
+        This exists because the mistake is easy and the loss looks total: the
+        training panel's voice selector reset on reload, so a recording session went
+        onto a different profile than the previous one, splitting 53 clips into 26 and
+        27. Neither half is enough to train on; together they are most of the way.
+
+        Both profiles must exist and be consented -- the destination because clips
+        may only attach to a consented voice, and the source because moving clips out
+        of a profile that does not exist would mean moving clips nobody agreed to.
+        The ciphertext is not touched: both profiles are encrypted under the same
+        Keychain key, so this is a file move plus a field rewrite, and the audio never
+        appears in the clear.
+
+        The consent records themselves are left alone. Merging clips does not merge
+        consent, and rewriting whose name is on a consent record to tidy up a
+        directory would be the wrong kind of convenient.
+        """
+        if source == destination:
+            raise DatasetError("Source and destination are the same profile.")
+        for profile_id in (source, destination):
+            if self.profiles.get(profile_id) is None:
+                raise ConsentError(f"No consented voice profile {profile_id!r}.")
+
+        target = self._dir(destination)
+        target.mkdir(parents=True, exist_ok=True)
+
+        moved = 0
+        for clip in self.clips(source):
+            payload = self._dir(source) / f"{clip.clip_id}.wav.enc"
+            meta = self._dir(source) / f"{clip.clip_id}.json"
+            if not payload.exists() or not meta.exists():
+                continue
+
+            clip_id = clip.clip_id
+            while (target / f"{clip_id}.json").exists():
+                clip_id = uuid.uuid4().hex[:12]
+
+            payload.rename(target / f"{clip_id}.wav.enc")
+            data = json.loads(meta.read_text())
+            data["profile_id"] = destination
+            data["clip_id"] = clip_id
+            (target / f"{clip_id}.json").write_text(json.dumps(data, indent=2))
+            meta.unlink()
+            moved += 1
+
+        remaining = self._dir(source)
+        if remaining.exists() and not any(remaining.iterdir()):
+            remaining.rmdir()
+        return moved
+
     # --- export -----------------------------------------------------------
 
     def export(
