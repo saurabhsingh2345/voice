@@ -207,6 +207,37 @@ def test_memory_requirement_scales_with_text_length():
     assert five > one
 
 
+def test_an_ordinary_hindi_paragraph_needs_only_the_floor():
+    """The bug this guards: a 200-character paragraph of short Hindi sentences was
+    refused at 3.0 GiB, and a 350-character one at 4.0 GiB, on a machine with 3.7
+    GiB free -- because the requirement scaled on total length while synthesis had
+    moved to one f5-tts call per sentence. Nothing here needs more than the floor.
+    """
+    paragraph = (
+        "आज मौसम बहुत सुहावना है। आसमान बिल्कुल साफ़ है। मैं आपकी मदद के लिए यहाँ हूँ। "
+        "पेड़ हमें हवा देते हैं। हमें पर्यावरण का ध्यान रखना चाहिए। यह एक अच्छा दिन है।"
+    )
+    assert len(paragraph) > 150, "keep this representative of a real paragraph"
+    assert srv.required_free_gib(paragraph) == srv.MIN_FREE_GIB_FOR_INDIC
+
+
+def test_one_very_long_sentence_still_raises_the_requirement():
+    """The guard must not become uniformly permissive -- a single long sentence is
+    one large f5-tts call and genuinely does need more headroom."""
+    long_sentence = "क " * 400 + "।"
+    assert srv.required_free_gib(long_sentence) > srv.MIN_FREE_GIB_FOR_INDIC
+
+
+def test_the_web_server_and_the_service_share_one_guard():
+    """These were two copies that diverged within a day: the service was corrected
+    for per-sentence synthesis and the web server was not, so the same text was
+    refused locally at 4.0 GiB while the service would have run it at 2.5 GiB."""
+    from voiceagent.web import tts_service as service
+
+    assert srv.required_free_gib is service._required_gib
+    assert srv.MIN_FREE_GIB_FOR_INDIC == service.MIN_FREE_GIB_FOR_INDIC
+
+
 def test_swap_percentage_is_not_used_as_a_guard():
     """Tried, and it was wrong. macOS sizes its swap file to demand, so it read
     92% full with 113 GiB free on disk while the machine was healthy and

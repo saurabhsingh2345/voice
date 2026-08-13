@@ -31,7 +31,7 @@ import numpy as np
 from fastapi import FastAPI, Form, Header, HTTPException, UploadFile
 from fastapi.responses import Response
 
-from voiceagent.tts.chunker import SentenceChunker
+from voiceagent.tts.indic_engine import MIN_FREE_GIB, required_free_gib
 
 TOKEN_ENV = "VOICEAGENT_TTS_TOKEN"
 DEFAULT_PORT = 8824
@@ -40,18 +40,10 @@ DEFAULT_PORT = 8824
 #: paste, not a quality-of-service limit.
 MAX_SPEAK_CHARS = 3000
 
-#: Memory guard, ported from `web.server` -- but computed from the longest
-#: *sentence* rather than the whole request, which the web server's copy predates.
-#:
-#: This matters more here than it did there. `IndicTTSEngine.synthesize` now
-#: synthesizes one sentence per f5_tts call (the mitigation for the MPS shader
-#: SIGSEGV), so peak memory tracks the longest single sentence, not the length of
-#: the text. Scaling on the total would demand 17 GiB for a 3000-character
-#: narration and refuse every real request on an 8 GiB machine -- while measuring
-#: something no single call actually allocates.
-MIN_FREE_GIB_FOR_INDIC = 2.5
-CHARS_PER_BATCH = 100
-GIB_PER_EXTRA_BATCH = 0.5
+#: Re-exported under this module's original name; the definition lives in
+#: `tts.indic_engine` now. This module held the corrected copy and `web.server`
+#: held the stale one, which is exactly the drift that made sharing it necessary.
+MIN_FREE_GIB_FOR_INDIC = MIN_FREE_GIB
 
 BUSY_MESSAGE = (
     "The TTS service is already synthesizing. Only one request runs at a time: the "
@@ -130,13 +122,9 @@ def _free_gib() -> float:
     return psutil.virtual_memory().available / 1024**3
 
 
-def _required_gib(text: str) -> float:
-    """Headroom needed for the largest single f5_tts call this text will produce."""
-    chunker = SentenceChunker()
-    sentences = [*chunker.feed(text), *chunker.flush()]
-    longest = max((len(s) for s in sentences), default=len(text))
-    batches = max(1, -(-longest // CHARS_PER_BATCH))
-    return MIN_FREE_GIB_FOR_INDIC + GIB_PER_EXTRA_BATCH * (batches - 1)
+#: Kept as a module-level name so this file reads the same as before the shared
+#: definition moved out.
+_required_gib = required_free_gib
 
 
 # --- endpoints ------------------------------------------------------------

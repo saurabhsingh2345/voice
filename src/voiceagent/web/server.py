@@ -24,6 +24,12 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from voiceagent.text.detect import detect
 from voiceagent.text.normalize_hi import normalize as normalize_hi
+from voiceagent.tts.indic_engine import (
+    CHARS_PER_BATCH,
+    GIB_PER_EXTRA_BATCH,
+    MIN_FREE_GIB,
+    required_free_gib,
+)
 from voiceagent.tts.remote_engine import RemoteTTSUnavailable
 from voiceagent.voice_clone.engine import SAMPLE_RATE, ChatterboxCloneEngine
 from voiceagent.voice_clone.store import (
@@ -88,23 +94,11 @@ _synth_started_at: float | None = None
 #: that a stray paste of a whole document still gets a clear answer.
 MAX_SPEAK_CHARS = 3000
 
-#: Free memory below this makes Indic synthesis a coin flip between very slow and
-#: wedged, so it is refused with an explanation instead. The model is ~1.4 GiB and
-#: needs headroom for activations on top.
-MIN_FREE_GIB_FOR_INDIC = 2.5
-
-#: Extra memory to require per synthesis batch beyond the first.
-#:
-#: f5-tts splits text into batches of roughly this many characters and holds
-#: activations for the batch it is working on, so the requirement grows with
-#: length -- which is why a short sentence succeeded and a five-batch narration
-#: was killed with the *same* memory free.
-#:
-#: The numbers are a rough envelope from observation, not a model of the
-#: allocator: one batch completed at ~4.9 GiB available; five batches died there;
-#: five batches completed at ~7.5 GiB.
-CHARS_PER_BATCH = 100
-GIB_PER_EXTRA_BATCH = 0.5
+#: Re-exported under this module's historical names. The definitions and the
+#: reasoning now live in `tts.indic_engine`, beside the synthesis strategy they
+#: depend on -- this module used to own them, a copy was made in
+#: `web.tts_service`, and the two diverged within a day.
+MIN_FREE_GIB_FOR_INDIC = MIN_FREE_GIB
 
 #: Deliberately NOT guarding on swap percentage, having tried it and been wrong.
 #:
@@ -544,17 +538,21 @@ async def speak(
                     import psutil as _psutil
 
                     free_gib = _psutil.virtual_memory().available / 1024**3
-                    batches = max(1, -(-len(spoken) // CHARS_PER_BATCH))
-                    needed = MIN_FREE_GIB_FOR_INDIC + GIB_PER_EXTRA_BATCH * (batches - 1)
+                    needed = required_free_gib(spoken)
                     if free_gib < needed:
                         raise HTTPException(
                             507,
-                            f"Only {free_gib:.1f} GiB of memory is free. This text is about "
-                            f"{batches} synthesis batch{'es' if batches > 1 else ''} and needs "
-                            f"roughly {needed:.1f} GiB. Close whatever is holding memory (a "
-                            "running VM, extra editor or browser windows), or send a shorter "
-                            "passage. Starting anyway risks the system killing this server "
-                            "mid-request rather than returning an error.",
+                            f"Only {free_gib:.1f} GiB of memory is free, and the longest "
+                            f"sentence here needs roughly {needed:.1f} GiB. Close whatever is "
+                            "holding memory (a running VM, extra editor or browser windows), "
+                            "or break up the longest sentence -- total length is not the "
+                            "constraint, since each sentence is synthesized separately. "
+                            "Starting anyway risks the system killing this server mid-request "
+                            "rather than returning an error.\n\n"
+                            "If you meant this to run on the TTS service machine: this guard "
+                            "only runs when VOICEAGENT_TTS_URL is unset, so seeing this "
+                            "message means the variable did not reach this process. Export it "
+                            "and restart the server.",
                         )
 
                 indic = await _ensure_indic()

@@ -97,6 +97,49 @@ DEFAULT_SEED = 0
 OLD_SEMANTICS = "pe_attn_head=1, text_mask_padding=False"
 
 
+#: Memory this engine needs free before it is safe to synthesize.
+#:
+#: Lives here, beside `synthesize`, because it is a consequence of *how* this
+#: engine synthesizes and has to change whenever that does. It previously lived
+#: in `web.server`, was copied into `web.tts_service`, and the two immediately
+#: diverged: the copy was updated for per-sentence synthesis and the original was
+#: not, so the same Hindi paragraph was refused locally at 4.0 GiB while the
+#: service would have run it at 2.5 GiB. One definition, two callers.
+#:
+#: f5-tts splits text into batches of roughly CHARS_PER_BATCH and holds
+#: activations for the batch it is working on, so the requirement grows with
+#: length. The numbers are an envelope from observation, not a model of the
+#: allocator: one batch completed at ~4.9 GiB available, five batches died there,
+#: five batches completed at ~7.5 GiB.
+MIN_FREE_GIB = 2.5
+CHARS_PER_BATCH = 100
+GIB_PER_EXTRA_BATCH = 0.5
+
+
+def required_free_gib(text: str) -> float:
+    """Headroom needed for the largest single f5-tts call `text` will produce.
+
+    Sized on the longest *sentence*, not the whole request, because
+    `synthesize()` makes one f5-tts call per sentence -- the mitigation for the
+    SIGSEGV in PyTorch's Metal shader library. Scaling on the total measures an
+    allocation no single call makes: it demanded 17 GiB for a 3000-character
+    narration and 4.0 GiB for an ordinary 350-character paragraph of short
+    sentences, refusing on an 18 GiB machine work that needs 2.5 GiB.
+
+    This only became true once Hindi actually chunked. While `TERMINALS` was
+    missing the danda, Devanagari had no sentence boundaries and the longest
+    "sentence" *was* nearly the whole text, so the two formulas agreed and the
+    total-length version looked correct.
+    """
+    from voiceagent.tts.chunker import SentenceChunker
+
+    chunker = SentenceChunker()
+    sentences = [*chunker.feed(text), *chunker.flush()]
+    longest = max((len(s) for s in sentences), default=len(text))
+    batches = max(1, -(-longest // CHARS_PER_BATCH))
+    return MIN_FREE_GIB + GIB_PER_EXTRA_BATCH * (batches - 1)
+
+
 class IndicTTSAccessError(RuntimeError):
     """Raised when the model is gated and the machine is not authenticated."""
 
