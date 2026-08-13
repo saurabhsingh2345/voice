@@ -556,6 +556,104 @@ out), seen once in ~80 generations and not attributable to any prompt. Judging
 Hindi *quality* still needs a native speaker; these numbers only catch the
 failures that are mechanical.
 
+## Running Indic TTS on a second machine
+
+The memory ceiling is the constraint behind most decisions in this project, and
+`TTSRouter` schedules around it by evicting one engine to load another. A spare
+machine removes it instead. Here that is an 8 GiB M1 Air: it holds IndicF5
+loaded permanently and answers synthesis over the LAN, so this Mac keeps the
+live loop resident and never reloads Chatterbox after speaking Hindi.
+
+```bash
+# once, on either machine
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+
+# on the Air (the service)
+uv sync --extra indic
+export VOICEAGENT_TTS_TOKEN='<token>'
+uv run voice-tts-service --host 0.0.0.0
+
+# on this Mac (the client)
+uv sync --extra remote
+export VOICEAGENT_TTS_TOKEN='<token>'          # the same one
+export VOICEAGENT_TTS_URL='http://192.168.1.42:8824'
+uv run voice-web
+```
+
+Both `voice-web` and `TTSRouter` pick this up from the environment; unset
+`VOICEAGENT_TTS_URL` and everything reverts to local weights.
+
+Measured end to end (client and service on one machine, so the network is
+loopback — see the caveats below):
+
+| | First audio | RTF | Round-trip |
+| --- | --- | --- | --- |
+| cold, model loading | 19.5 s | 10.59 | — |
+| **warm** | **8.4 s** | **4.58** | **95 %, INTELLIGIBLE** |
+
+The second request reported `loaded: true` and cost less than half the first,
+which is the property the whole arrangement is for: the reload stops happening.
+Audio came back at 95 % round-trip overlap in Hindi — identical to the best local
+result, so the wire path does not degrade it.
+
+### Why this is safe for IndicF5 and would be wrong for anything else
+
+Indic synthesis is RTF ~3.4. A LAN round trip is 1–5 ms and the reference clip is
+~0.5 MB, so the network is about 0.1 % of the request. Kokoro (RTF ~0.1, 280 ms
+to first audio) would be dominated by it, and the LLM would be worse still: any
+form of pipeline-sharding puts a network hop in the path of *every generated
+token*. Only move work that is already too slow to be interactive.
+
+### What this costs, stated plainly
+
+- **The privacy claim weakens.** The reference clip is decrypted here — the
+  Fernet key never leaves this Keychain — but the plaintext WAV then crosses the
+  LAN. "Nothing leaves this machine" becomes "nothing leaves my hardware". So
+  the transport is not left open: every request carries a shared token compared
+  with `compare_digest`, the service refuses to start without one, it binds to
+  loopback unless `--host` says otherwise, and the client refuses plain HTTP to
+  any address that is not private or loopback.
+- **The licence violation is isolated, not resolved.** `audit_installed_packages()`
+  walks the current venv, so a Mac that installs `remote` instead of `indic` has
+  no `encodec`, `Unidecode`, `frozendict` or `soxr` in its tree and
+  `voice-doctor` passes. That is a real gain — the packaged app stops depending
+  on a non-commercial package — but encodec is still CC-BY-NC wherever it runs.
+  Indic Parler-TTS remains the only actual fix.
+- **The numbers above are not two-machine numbers.** Both processes ran on this
+  M3 Pro under memory pressure (4.8 GiB free, 9.8 GiB swap), which is why RTF
+  4.58 is worse than the 3.40 baseline. An M1 Air is slower silicon than an M3
+  Pro, so expect its RTF to be worse than 3.40 too — what improves is that this
+  machine stops paying for it at all.
+- **`cancel()` does not interrupt the far side.** HTTP gives no way to stop
+  f5-tts mid-generation, so cancelling stops playback but not the remote
+  compute. This costs nothing today because Hindi is type-and-listen; there is
+  no live loop to barge in on.
+- **The service persists nothing.** The reference arrives with each request and
+  lives in memory for its duration. There is no voice cached under an
+  identifier, so there is nothing on that machine to leak or forget to delete.
+
+### The Indic crash mitigation was barely working
+
+Building this surfaced a bug that has nothing to do with networking.
+`SentenceChunker.TERMINALS` was `".!?"`, and Hindi ends sentences with `।`. So
+Devanagari text had no sentence boundaries at all: **20 Hindi sentences came out
+as 2 chunks** where the same 20 in English came out as 20.
+
+That is not a prosody problem. `IndicTTSEngine.synthesize` synthesizes one
+sentence per f5-tts call *specifically* to keep each call small, because a
+428-character narration segfaulted inside PyTorch's Metal backend. With nothing
+to cut on, Hindi text was handed over nearly whole and split by f5-tts's own
+internal batching — the exact path that crashed. The mitigation appeared to work
+only because the first-chunk rule happened to break the text in two.
+
+A second defect sat next to it: the run-on fallback searched the whole buffer
+from the end, so with no punctuation it cut at the *last* space rather than near
+the limit, emitting one 2359-character chunk against a 220 limit. Both searches
+are now bounded to `max_chars`, which makes the documented limit real. Chunk
+length sets peak allocation for one f5-tts call, so this is a memory decision as
+much as a prosodic one — the service sizes its memory guard on the longest
+sentence for exactly that reason.
+
 ## Layout
 
 | Path | Role |
@@ -590,7 +688,10 @@ Known gaps, stated rather than buried:
 
 - **`voice-doctor` currently fails**: `f5-tts` pulled in four non-permissive
   packages, one of them non-commercial. Personal use is unaffected; commercial
-  distribution of the Indic path is not cleared. See above.
+  distribution of the Indic path is not cleared. See above. Moving Indic TTS to a
+  second machine (`--extra remote` here, `--extra indic` there) makes it pass
+  *here* by keeping those packages off this venv — which isolates the violation
+  rather than resolving it.
 - Hindi is **type-and-listen only** (RTF 3.40); the live loop stays English.
 - No acoustic echo cancellation — use headphones (Phase 4).
 - The desktop app is a launcher and still needs the checkout and its `.venv`.

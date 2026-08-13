@@ -24,6 +24,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from voiceagent.text.detect import detect
 from voiceagent.text.normalize_hi import normalize as normalize_hi
+from voiceagent.tts.remote_engine import RemoteTTSUnavailable
 from voiceagent.voice_clone.engine import SAMPLE_RATE, ChatterboxCloneEngine
 from voiceagent.voice_clone.store import (
     CONSENT_PHRASE,
@@ -133,18 +134,40 @@ async def _ensure_loaded() -> None:
             _loaded = True
 
 
+#: True once _ensure_indic has resolved to a service on another machine. Read by
+#: the memory guard in /api/speak, which would otherwise measure the wrong host.
+_indic_is_remote = False
+
+
 async def _ensure_indic() -> "object":
-    """Load IndicF5 on first Indic request, evicting Chatterbox to make room."""
-    global _indic_engine, _loaded
+    """Get the Indic engine, local or remote.
+
+    With VOICEAGENT_TTS_URL set, synthesis happens on another machine and this
+    one keeps Chatterbox resident -- the eviction below exists only because both
+    models cannot fit here at once, and that stops being true when one of them
+    is somewhere else. Removing it also removes Chatterbox's 30 s reload on the
+    next English request, which is the eviction's real cost.
+    """
+    global _indic_engine, _loaded, _indic_is_remote
     from voiceagent.tts.indic_engine import IndicTTSEngine
+    from voiceagent.tts.remote_engine import from_env
 
     async with _indic_lock:
         if _indic_engine is None:
-            if _loaded:
-                engine.unload()
-                _loaded = False
-            _indic_engine = IndicTTSEngine()
-            await asyncio.to_thread(_indic_engine.load)
+            remote = from_env()
+            if remote is not None:
+                # load() here is a health check, not a model load -- it fails
+                # fast and loudly if the other machine is asleep, rather than
+                # halfway through a request.
+                await asyncio.to_thread(remote.load)
+                _indic_engine = remote
+                _indic_is_remote = True
+            else:
+                if _loaded:
+                    engine.unload()
+                    _loaded = False
+                _indic_engine = IndicTTSEngine()
+                await asyncio.to_thread(_indic_engine.load)
     return _indic_engine
 
 
@@ -504,21 +527,35 @@ async def speak(
                 # request does not fail, it wedges: the model pages out to swap
                 # mid-inference and neither finishes nor errors. A message the user
                 # can act on beats a ten-minute hang.
-                import psutil as _psutil
+                #
+                # Skipped entirely when a remote service is configured, and the
+                # env var is read rather than `_indic_is_remote` so the answer
+                # does not depend on whether _ensure_indic has run yet. This
+                # guard measures *this* machine's memory; when the work happens
+                # elsewhere that number is not merely irrelevant, it is wrong in
+                # the dangerous direction -- it would refuse a request the
+                # service machine had ample room for. The far side runs the same
+                # guard against its own memory, and its 507 is passed through.
+                import os as _os
 
-                free_gib = _psutil.virtual_memory().available / 1024**3
-                batches = max(1, -(-len(spoken) // CHARS_PER_BATCH))
-                needed = MIN_FREE_GIB_FOR_INDIC + GIB_PER_EXTRA_BATCH * (batches - 1)
-                if free_gib < needed:
-                    raise HTTPException(
-                        507,
-                        f"Only {free_gib:.1f} GiB of memory is free. This text is about "
-                        f"{batches} synthesis batch{'es' if batches > 1 else ''} and needs "
-                        f"roughly {needed:.1f} GiB. Close whatever is holding memory (a "
-                        "running VM, extra editor or browser windows), or send a shorter "
-                        "passage. Starting anyway risks the system killing this server "
-                        "mid-request rather than returning an error.",
-                    )
+                from voiceagent.tts.remote_engine import DEFAULT_URL_ENV
+
+                if not _os.environ.get(DEFAULT_URL_ENV, "").strip():
+                    import psutil as _psutil
+
+                    free_gib = _psutil.virtual_memory().available / 1024**3
+                    batches = max(1, -(-len(spoken) // CHARS_PER_BATCH))
+                    needed = MIN_FREE_GIB_FOR_INDIC + GIB_PER_EXTRA_BATCH * (batches - 1)
+                    if free_gib < needed:
+                        raise HTTPException(
+                            507,
+                            f"Only {free_gib:.1f} GiB of memory is free. This text is about "
+                            f"{batches} synthesis batch{'es' if batches > 1 else ''} and needs "
+                            f"roughly {needed:.1f} GiB. Close whatever is holding memory (a "
+                            "running VM, extra editor or browser windows), or send a shorter "
+                            "passage. Starting anyway risks the system killing this server "
+                            "mid-request rather than returning an error.",
+                        )
 
                 indic = await _ensure_indic()
                 import io as _io
@@ -546,6 +583,12 @@ async def speak(
         raise
     except ConsentError as exc:
         raise HTTPException(403, str(exc)) from exc
+    except RemoteTTSUnavailable as exc:
+        # 502, not 500: the failure is the other machine's, and the message names
+        # it. Reported as-is because "is the Air awake and on this network" is
+        # something the user can check, and a generic 500 would send them looking
+        # in this process instead.
+        raise HTTPException(502, str(exc)) from exc
     finally:
         # Cleared unconditionally: a stale timestamp would make the next busy
         # message report a nonsense duration.
@@ -569,7 +612,11 @@ async def speak(
             "X-Realtime-Factor": f"{(elapsed_ms / 1000) / seconds:.2f}" if seconds else "0",
             "X-Audio-Format": ext,
             "X-Language": detection.language,
-            "X-Engine": "indicf5" if detection.is_indic else "chatterbox",
+            "X-Engine": (
+                ("indicf5-remote" if _indic_is_remote else "indicf5")
+                if detection.is_indic
+                else "chatterbox"
+            ),
             "X-Audio-Bytes": str(len(payload)),
             "Content-Disposition": f'inline; filename="speech.{ext}"',
         },

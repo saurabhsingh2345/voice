@@ -60,8 +60,22 @@ class TTSRouter:
             return route._engine
 
         if not self.keep_resident and self._active is not None and self._active is not route:
-            if self._active._engine is not None:
-                self._active._engine.unload()
+            # An engine that holds no memory on this machine is never worth
+            # evicting; see TTSEngine.evictable. This is what makes a remote
+            # engine actually stay resident on the machine running it -- without
+            # it, alternating languages would tell the service to unload after
+            # every English turn, reintroducing the 15-30 s reload that moving
+            # the engine off this machine removed.
+            #
+            # getattr with a True default, not `previous.evictable`: engines are
+            # duck-typed here as well as subclassed, and the default has to be
+            # the safe direction. An engine that does not declare itself gets
+            # evicted, which preserves the memory ceiling; defaulting the other
+            # way would silently keep two models resident the first time someone
+            # plugged in a backend that predates this flag.
+            previous = self._active._engine
+            if previous is not None and getattr(previous, "evictable", True):
+                previous.unload()
                 self._active._engine = None
 
         if route._engine is None:
@@ -115,6 +129,18 @@ def build_default_router(keep_resident: bool = False) -> TTSRouter:
         return KokoroEngine()
 
     def indic() -> TTSEngine:
+        """A service on another machine if one is configured, else local weights.
+
+        One switch for the whole application: with VOICEAGENT_TTS_URL set, the
+        Indic route stops competing with the English pipeline for this machine's
+        memory, and the eviction above stops firing (see `_activate`).
+        """
+        from voiceagent.tts.remote_engine import from_env
+
+        remote = from_env()
+        if remote is not None:
+            return remote
+
         from voiceagent.tts.indic_engine import IndicTTSEngine
 
         return IndicTTSEngine()

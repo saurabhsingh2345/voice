@@ -30,6 +30,20 @@ class TTSEngine(ABC):
 
     name: str
 
+    evictable: bool = True
+    """Whether unloading this engine reclaims memory on *this* machine.
+
+    `TTSRouter` evicts one engine to make room for another, which is only ever
+    worth doing when there is local memory to reclaim. An engine that runs
+    somewhere else sets this False: evicting it frees nothing here and costs the
+    machine that does the work a full model reload.
+
+    Deliberately a declared flag rather than `resident_bytes == 0`. A local engine
+    can legitimately report zero -- before load, or because its backend does not
+    expose a memory counter -- and silently not evicting one of those would
+    reintroduce the over-budget condition the router exists to prevent.
+    """
+
     @abstractmethod
     def load(self) -> None: ...
 
