@@ -153,6 +153,10 @@
       <label>Prompt <span class="muted">(optional — spans registers so your data is not all one tone)</span></label>
       <div id="dsPrompt" class="status"></div>
       <button id="dsNextPrompt">Another prompt</button>
+      <label style="display:inline-flex;align-items:center;gap:.4rem;margin-left:.6rem">
+        <input type="checkbox" id="dsIsReading" checked style="width:auto">
+        I am reading this prompt <span class="muted">(uses the prompt text, not Whisper)</span>
+      </label>
       <span class="muted">or just talk naturally — that scales better than reading.</span>
     </div>
 
@@ -558,6 +562,12 @@ loadConfig().then(refreshVoices);
 // Reuses blobToWav() and the recorder pattern above rather than duplicating a
 // second encoder: the browser is the only thing that can decode its own webm.
 let dsBlob = null, dsSeconds = 0, dsRecorder = null, dsChunks = [], dsPrompts = [], dsPromptAt = 0;
+// Whether the clip being recorded is a reading of the displayed prompt. If it
+// is, the prompt text IS the transcript and Whisper must not be consulted:
+// asking it to guess text we already know can only introduce error, and it did
+// -- it heard कृपया as क्रिपय and स्पष्ट as इस पर्ष्ट, which would teach the model
+// that one word's sound belongs to another word's spelling.
+let dsReadingPrompt = true;
 
 const dsFmt = s => s >= 60 ? `${Math.floor(s/60)}m ${Math.round(s%60)}s` : `${s.toFixed(1)}s`;
 
@@ -571,6 +581,7 @@ function dsShowPrompt() {
   $("dsPrompt").textContent = `${p.text}   —  ${p.register}`;
 }
 $("dsNextPrompt").onclick = () => { dsPromptAt++; dsShowPrompt(); };
+$("dsIsReading").onchange = e => { dsReadingPrompt = e.target.checked; };
 
 function dsVoiceId() { return $("dsVoice").value; }
 
@@ -623,10 +634,16 @@ async function dsAccept(blob) {
   $("dsClipInfo").textContent = seconds.toFixed(1) + "s";
   $("dsSave").disabled = false;
 
-  // Transcribe immediately: correcting text is far easier than typing it, and a
-  // wrong transcript teaches the model a false mapping, so it must be reviewable.
   const id = dsVoiceId();
   if (!id) return;
+
+  // Exact text beats a good guess. Only fall back to Whisper for free speech.
+  if (dsReadingPrompt && dsPrompts.length) {
+    $("dsText").value = dsPrompts[dsPromptAt % dsPrompts.length].text;
+    setStatus($("dsStatus"), "Transcript taken from the prompt — exact, no transcription error. Save it.", "ok");
+    return;
+  }
+
   setStatus($("dsStatus"), "Transcribing…");
   const body = new FormData();
   body.append("clip", wav, "clip.wav");

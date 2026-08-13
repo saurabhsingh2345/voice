@@ -207,3 +207,25 @@ def test_export_can_be_restricted_to_one_language(dataset, profile, tmp_path):
     dataset.add_clip(profile.profile_id, wav_bytes(), "Hello.", 3.0, 24_000, language="en")
     _, count, _ = dataset.export(profile.profile_id, tmp_path / "hi", language="hi")
     assert count == 1
+
+
+def test_export_does_not_hand_out_the_stock_finetune_command(dataset, profile, tmp_path, monkeypatch):
+    """The stock f5-tts CLI builds the model with text_mask_padding=True and
+    pe_attn_head=null. IndicF5 needs False and 1, every tensor still loads with the
+    wrong values, so it does not error -- it spends hours unlearning the pretrained
+    weights. Printing that command in the product was worse than printing nothing."""
+    from fastapi.testclient import TestClient
+
+    from voiceagent.web import server as srv
+
+    monkeypatch.setattr(srv, "dataset", dataset)
+    dataset.add_clip(profile.profile_id, wav_bytes(), "नमस्ते।", 3.0, 24_000)
+
+    steps = " ".join(
+        TestClient(srv.app)
+        .post(f"/api/dataset/{profile.profile_id}/export", data={"language": ""})
+        .json()["next_steps"]
+    )
+    assert "voice-train-prep" in steps
+    assert "f5-tts_finetune-cli" not in steps, "the stock CLI cannot fine-tune IndicF5 correctly"
+    assert "prepare_csv_wavs" not in steps, "its output path depends on the tokenizer; prep prints it"

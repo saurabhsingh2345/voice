@@ -786,13 +786,20 @@ async def export_dataset(profile_id: str, language: str = Form("")) -> dict:
         "plaintext_warning": (
             "This directory holds DECRYPTED audio. Delete it when training finishes."
         ),
+        # One command, deliberately. This used to print prepare_csv_wavs and
+        # f5-tts_finetune-cli directly, which was wrong in four ways at once:
+        # the stock CLI builds the model with text_mask_padding=True and
+        # pe_attn_head=null, IndicF5 needs False and 1; it defaults to the pinyin
+        # tokenizer instead of IndicF5's 2545-entry vocab; it cannot load a
+        # checkpoint whose keys read ema_model._orig_mod.*; and it writes both the
+        # dataset and the checkpoints inside .venv. The flag mismatch is the
+        # dangerous one -- every tensor still loads, so it does not error, it just
+        # spends hours unlearning the pretrained weights. voice-train-prep fixes
+        # all four and prints the two commands that follow it.
         "next_steps": [
-            f"uv run python -m f5_tts.train.datasets.prepare_csv_wavs {metadata} "
-            f"{destination}/arrow",
-            "uv run f5-tts_finetune-cli --exp_name F5TTS_v1_Base --finetune "
-            f"--dataset_name {profile_id} --batch_size_per_gpu 1600 "
-            "--grad_accumulation_steps 2 --learning_rate 1e-5",
-            f"rm -rf {destination}   # remove the decrypted copy",
+            f"uv run voice-train-prep {profile_id}",
+            "then run the two commands it prints",
+            f"rm -rf {destination}   # remove the decrypted copy when training finishes",
         ],
     }
 
