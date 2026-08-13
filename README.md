@@ -574,11 +574,24 @@ export VOICEAGENT_TTS_TOKEN='<token>'
 uv run voice-tts-service --host 0.0.0.0
 
 # on this Mac (the client)
-uv sync --extra remote
+uv sync --all-extras                           # NOT --extra remote alone; see below
 export VOICEAGENT_TTS_TOKEN='<token>'          # the same one
 export VOICEAGENT_TTS_URL='http://192.168.1.42:8824'
 uv run voice-web
 ```
+
+`uv sync --extra remote` **prunes to exactly that extra**, silently removing
+Chatterbox, Whisper, the VAD and mlx-lm — so English synthesis, auto-transcribe
+and `voice-chat` all break while the Hindi path keeps working, which is a
+confusing way to find out. Use `--extra remote` alone only on a machine whose job
+really is client-and-nothing-else; on a machine that also runs the loop, use
+`--all-extras`.
+
+Keeping `indic` installed here is a deliberate trade with a cost: local Hindi
+still works when the service machine is asleep, but the licence audit stays red
+here, so the green-audit benefit applies only to a build that genuinely omits the
+extra. The fallback is also slow on first use — it pays the 15-30 s model load
+the service exists to avoid.
 
 Both `voice-web` and `TTSRouter` pick this up from the environment; unset
 `VOICEAGENT_TTS_URL` and everything reverts to local weights.
