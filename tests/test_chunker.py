@@ -58,6 +58,46 @@ def test_long_run_on_falls_back_to_clause_break():
     assert all(len(c) <= 260 for c in chunks)
 
 
+def test_hindi_splits_on_the_danda():
+    """Hindi ends sentences with `।`, and it was not in TERMINALS.
+
+    So Devanagari had no boundaries at all: 20 Hindi sentences chunked as 2 where
+    20 English ones chunked as 20. That is not a prosody bug. IndicTTSEngine
+    synthesizes one sentence per f5-tts call specifically to keep each call small,
+    because a 428-character narration segfaulted inside PyTorch's Metal backend --
+    so unsplit Hindi went to f5-tts nearly whole and was split by its own internal
+    batching, which is the path that crashed.
+    """
+    assert drain("नमस्ते। आप कैसे हैं। मैं ठीक हूँ।") == [
+        "नमस्ते।",
+        "आप कैसे हैं।",
+        "मैं ठीक हूँ।",
+    ]
+
+
+def test_the_double_danda_also_ends_a_sentence():
+    assert drain("यह पहला वाक्य है॥ यह दूसरा है॥") == ["यह पहला वाक्य है॥", "यह दूसरा है॥"]
+
+
+def test_hindi_and_english_chunk_at_the_same_rate():
+    """The regression this guards is asymmetry: whatever the count, the two
+    scripts must not differ by an order of magnitude for equivalent text."""
+    hindi = drain("नमस्ते। " * 20)
+    english = drain("Hello there. " * 20)
+    assert len(hindi) == len(english) == 20
+
+
+def test_max_chars_actually_bounds_an_unpunctuated_chunk():
+    """Both fallback searches scanned the whole buffer from the end, so with no
+    punctuation the cut landed at the *last* space rather than near the limit --
+    2359 characters against a 220 limit was measured. Chunk length sets peak
+    allocation for one f5-tts call, so this is a memory bound, not just a
+    prosodic one."""
+    chunker = SentenceChunker()
+    chunks = [*chunker.feed("क " * 900), *chunker.flush()]
+    assert max(len(c) for c in chunks) <= chunker.max_chars
+
+
 def test_flush_returns_trailing_text():
     chunker = SentenceChunker()
     assert chunker.feed("No terminal here") == []

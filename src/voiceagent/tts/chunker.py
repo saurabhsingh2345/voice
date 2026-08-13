@@ -15,7 +15,20 @@ from __future__ import annotations
 import re
 
 #: Sentence-final punctuation.
-TERMINALS = ".!?"
+#:
+#: The danda and double danda are here because their absence made the Indic
+#: crash mitigation almost inoperative. Hindi ends sentences with `।`, not `.`,
+#: so no Devanagari text ever hit a boundary: 20 Hindi sentences came out as 2
+#: chunks (39 and 119 chars) where the same 20 in English came out as 20.
+#:
+#: That matters well beyond prosody. `IndicTTSEngine.synthesize` synthesizes one
+#: sentence per f5_tts call *specifically* to keep each call small, because a
+#: 428-character narration segfaulted inside PyTorch's Metal backend
+#: (`abs_kernel_mps`, no traceback, process gone). With no boundaries to cut on,
+#: Hindi text was handed to f5_tts nearly whole and split by its own internal
+#: batching -- the exact path that crashed. The mitigation appeared to work only
+#: because the first-chunk rule happened to break the text in two.
+TERMINALS = ".!?।॥"
 
 #: Weaker breaks, used only when a chunk is running long.
 CLAUSE_BREAKS = ",;:"
@@ -102,12 +115,22 @@ class SentenceChunker:
 
         # Nothing terminal. If we are running long, fall back to a clause break
         # so the listener is not left waiting on a run-on sentence.
+        #
+        # Both searches are bounded to the first max_chars, which they were not:
+        # they scanned the whole buffer from the end, so the "no punctuation"
+        # fallback cut at the *last* space in the buffer rather than near the
+        # limit. On unpunctuated text that emitted one enormous chunk -- 2359
+        # characters against a 220 limit was measured -- making max_chars
+        # advisory in exactly the case it exists to bound. Downstream that is a
+        # memory decision as well as a prosodic one: chunk length sets peak
+        # allocation for one f5_tts call.
         if len(self._buffer) >= self.max_chars:
-            for i in range(len(self._buffer) - 1, self.min_clause_chars - 1, -1):
-                if self._buffer[i] in CLAUSE_BREAKS:
+            window = self._buffer[: self.max_chars]
+            for i in range(len(window) - 1, self.min_clause_chars - 1, -1):
+                if window[i] in CLAUSE_BREAKS:
                     return i + 1
-            # No punctuation at all -- cut at the last word break.
-            cut = self._buffer.rfind(" ", self.min_clause_chars)
+            # No punctuation at all -- cut at the last word break in the window.
+            cut = window.rfind(" ", self.min_clause_chars)
             if cut != -1:
                 return cut
         return -1
