@@ -32,6 +32,13 @@ from voiceagent.tts.indic_engine import (
     required_free_gib,
 )
 from voiceagent.tts.remote_engine import RemoteTTSUnavailable
+from voiceagent.voice_clone.dataset import (
+    MAX_CLIP_SECONDS,
+    MIN_CLIP_SECONDS,
+    MINIMUM_USEFUL_SECONDS,
+    DatasetError,
+    VoiceDataset,
+)
 from voiceagent.voice_clone.engine import SAMPLE_RATE, ChatterboxCloneEngine
 from voiceagent.voice_clone.store import (
     CONSENT_PHRASE,
@@ -45,6 +52,10 @@ from voiceagent.voice_clone.store import (
 app = FastAPI(title="Local Voice Agent")
 store = VoiceProfileStore()
 engine = ChatterboxCloneEngine(store=store)
+
+#: Training clips, stored inside each profile directory so the existing deletion
+#: paths reach them. See voice_clone.dataset.
+dataset = VoiceDataset(profiles=store)
 
 #: Chatterbox is English-only, so Devanagari sent to it produces nothing usable.
 #: Indic text goes to IndicF5, which clones from the same reference clip -- so
@@ -187,6 +198,23 @@ def _decode_upload(raw: bytes) -> tuple[np.ndarray, int, float]:
     if audio.ndim > 1:
         audio = audio.mean(axis=1)
     return audio, sr, len(audio) / sr
+
+
+def _whisper(audio: np.ndarray, sample_rate: int, target: int = 16_000) -> dict:
+    """Transcribe with Whisper, resampling to the 16 kHz it expects.
+
+    Shared by the reference transcriber and the dataset transcriber. It was inline
+    in the first of those; a second copy is how the memory-guard pair drifted, so
+    this one is extracted the first time it is needed twice rather than the second.
+    """
+    import mlx_whisper
+
+    if sample_rate != target:
+        idx = (np.arange(int(len(audio) * target / sample_rate)) * sample_rate / target).astype(int)
+        audio = audio[idx[idx < len(audio)]]
+    return mlx_whisper.transcribe(
+        audio, path_or_hf_repo="mlx-community/whisper-large-v3-turbo", fp16=True, verbose=None
+    )
 
 
 def _to_wav_bytes(audio: np.ndarray, sample_rate: int) -> bytes:
@@ -346,23 +374,8 @@ async def transcribe_reference(profile_id: str) -> dict:
     # audio describe the same thing.
     audio = audio[: int(REFERENCE_CLIP_SECONDS * sr)]
 
-    target = 16_000
-    if sr != target:
-        idx = (np.arange(int(len(audio) * target / sr)) * sr / target).astype(int)
-        audio = audio[idx[idx < len(audio)]]
-
-    def _run() -> dict:
-        import mlx_whisper
-
-        return mlx_whisper.transcribe(
-            audio,
-            path_or_hf_repo="mlx-community/whisper-large-v3-turbo",
-            fp16=True,
-            verbose=None,
-        )
-
     try:
-        result = await asyncio.to_thread(_run)
+        result = await asyncio.to_thread(_whisper, audio, sr)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(500, f"transcription failed: {exc}") from exc
 
@@ -624,6 +637,170 @@ async def speak(
             "Content-Disposition": f'inline; filename="speech.{ext}"',
         },
     )
+
+
+# --- training dataset -----------------------------------------------------
+#
+# Zero-shot cloning transfers timbre from one 12-second prompt and stops there.
+# Everything below exists to get past that: many clips of one speaker, each with a
+# transcript, accumulated until there is enough to fine-tune on.
+
+
+@app.get("/api/prompts")
+async def prompts() -> list[dict]:
+    """Register-spanning sentences to read, from the project's own eval set.
+
+    Volume alone does not capture how someone speaks. Thirty minutes of flat
+    read-aloud teaches the model to sound flat, so the UI cycles prompts across
+    registers -- formal, colloquial, code-mixed, numeric -- to push the dataset
+    across the range instead of letting it settle into one tone.
+
+    Eleven sentences is nowhere near a dataset. They are calibration, not corpus:
+    the bulk has to be natural speech, transcribed and corrected.
+    """
+    from voiceagent.eval import sentences as S
+
+    return [
+        {"slug": s.slug, "text": s.text, "register": s.register, "note": s.note}
+        for s in S.HINDI_ONLY
+    ]
+
+
+@app.get("/api/dataset/{profile_id}")
+async def dataset_summary(profile_id: str) -> dict:
+    summary = dataset.summary(profile_id)
+    return {
+        "profile_id": profile_id,
+        "speaker_name": summary.speaker_name,
+        "clip_count": summary.clip_count,
+        "total_seconds": summary.total_seconds,
+        "target_seconds": summary.target_seconds,
+        "fraction_of_target": round(summary.fraction_of_target, 4),
+        "usable": summary.usable,
+        "minimum_useful_seconds": MINIMUM_USEFUL_SECONDS,
+        "min_clip_seconds": MIN_CLIP_SECONDS,
+        "max_clip_seconds": MAX_CLIP_SECONDS,
+        "clips": [
+            {
+                "clip_id": c.clip_id,
+                "text": c.text,
+                "duration_seconds": c.duration_seconds,
+                "language": c.language,
+                "created_at": c.created_at,
+            }
+            for c in dataset.clips(profile_id)
+        ],
+    }
+
+
+@app.post("/api/dataset/{profile_id}/transcribe")
+async def transcribe_clip(profile_id: str, clip: UploadFile = Form(...)) -> dict:
+    """Transcribe a clip before it is saved, so the text can be corrected first.
+
+    Whisper rather than Moonshine, for the reason Phase 9 established: Moonshine is
+    English-only and does not refuse Hindi, it invents English words that sound
+    similar. Training on that text would teach the model a false mapping, which is
+    worse than having no clip at all.
+    """
+    if dataset.profiles.get(profile_id) is None:
+        raise HTTPException(404, "no such consented voice profile")
+
+    audio, sr, duration = _decode_upload(await clip.read())
+    try:
+        result = await asyncio.to_thread(_whisper, audio, sr)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, f"transcription failed: {exc}") from exc
+    return {
+        "text": (result.get("text") or "").strip(),
+        "language": result.get("language", "?"),
+        "duration_seconds": round(duration, 2),
+    }
+
+
+@app.post("/api/dataset/{profile_id}/clips")
+async def add_clip(
+    profile_id: str,
+    clip: UploadFile = Form(...),
+    text: str = Form(...),
+    language: str = Form("hi"),
+) -> dict:
+    audio, sr, duration = _decode_upload(await clip.read())
+    try:
+        saved = dataset.add_clip(
+            profile_id, _to_wav_bytes(audio, sr), text, duration, sr, language=language
+        )
+    except ConsentError as exc:
+        raise HTTPException(403, str(exc)) from exc
+    except DatasetError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    summary = dataset.summary(profile_id)
+    return {
+        "clip_id": saved.clip_id,
+        "duration_seconds": saved.duration_seconds,
+        "clip_count": summary.clip_count,
+        "total_seconds": summary.total_seconds,
+    }
+
+
+@app.patch("/api/dataset/{profile_id}/clips/{clip_id}")
+async def edit_clip(profile_id: str, clip_id: str, text: str = Form(...)) -> dict:
+    try:
+        clip = dataset.set_text(profile_id, clip_id, text)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except DatasetError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"clip_id": clip.clip_id, "text": clip.text}
+
+
+@app.delete("/api/dataset/{profile_id}/clips/{clip_id}")
+async def remove_clip(profile_id: str, clip_id: str) -> dict:
+    if not dataset.delete_clip(profile_id, clip_id):
+        raise HTTPException(404, "no such clip")
+    summary = dataset.summary(profile_id)
+    return {"deleted": clip_id, "clip_count": summary.clip_count,
+            "total_seconds": summary.total_seconds}
+
+
+@app.post("/api/dataset/{profile_id}/export")
+async def export_dataset(profile_id: str, language: str = Form("")) -> dict:
+    """Write a plaintext training set and return the commands to train on it.
+
+    This is the one operation here that puts decrypted audio on disk, because the
+    trainer is a separate process that reads files. The destination is under
+    `data/`, which is gitignored, and `purge` removes it again.
+    """
+    destination = Path(dataset.root).parent / "training" / profile_id
+    try:
+        metadata, count, seconds = dataset.export(
+            profile_id, destination, language=language.strip() or None
+        )
+    except DatasetError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    return {
+        "metadata_csv": str(metadata),
+        "clip_count": count,
+        "total_seconds": seconds,
+        "plaintext_warning": (
+            "This directory holds DECRYPTED audio. Delete it when training finishes."
+        ),
+        "next_steps": [
+            f"uv run python -m f5_tts.train.datasets.prepare_csv_wavs {metadata} "
+            f"{destination}/arrow",
+            "uv run f5-tts_finetune-cli --exp_name F5TTS_v1_Base --finetune "
+            f"--dataset_name {profile_id} --batch_size_per_gpu 1600 "
+            "--grad_accumulation_steps 2 --learning_rate 1e-5",
+            f"rm -rf {destination}   # remove the decrypted copy",
+        ],
+    }
+
+
+@app.delete("/api/dataset/{profile_id}")
+async def clear_dataset(profile_id: str) -> dict:
+    """Drop every training clip for a voice, leaving the enrolled voice itself."""
+    return {"deleted_clips": dataset.delete_all(profile_id)}
 
 
 def main() -> int:

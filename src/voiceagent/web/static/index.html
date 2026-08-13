@@ -134,6 +134,57 @@
     <audio id="out" controls hidden></audio>
     <div class="metrics" id="metrics"></div>
   </section>
+
+  <section>
+    <h2>4 · Train on your voice</h2>
+    <p class="muted">
+      Zero-shot cloning copies your timbre from one short clip and stops there. To be
+      mistaken for you it has to learn your rhythm too, and that needs a dataset.
+      Record clips of <b>1.5–20 seconds</b> each, correct the transcript, and save.
+    </p>
+
+    <label for="dsVoice">Voice to train</label>
+    <select id="dsVoice"></select>
+
+    <div class="meter" style="margin-top:12px"><i id="dsBar"></i></div>
+    <div class="muted" id="dsProgress">No clips yet.</div>
+
+    <div style="margin-top:14px">
+      <label>Prompt <span class="muted">(optional — spans registers so your data is not all one tone)</span></label>
+      <div id="dsPrompt" class="status"></div>
+      <button id="dsNextPrompt">Another prompt</button>
+      <span class="muted">or just talk naturally — that scales better than reading.</span>
+    </div>
+
+    <div class="row" style="margin-top:14px">
+      <button id="dsRec">● Record clip</button>
+      <button id="dsStop" disabled>■ Stop</button>
+      <span class="muted">or</span>
+      <input type="file" id="dsFile" accept="audio/*" style="flex:1; min-width:180px">
+    </div>
+    <div class="meter"><i id="dsLevel"></i></div>
+    <audio id="dsPreview" controls hidden></audio>
+
+    <label for="dsText" style="margin-top:10px">What you said <span class="muted">(auto-filled by Whisper — fix it before saving)</span></label>
+    <textarea id="dsText" placeholder="Transcript of the clip…"></textarea>
+
+    <div class="row">
+      <button class="primary" id="dsSave" disabled>Save clip</button>
+      <span class="muted" id="dsClipInfo"></span>
+    </div>
+    <div class="status" id="dsStatus"></div>
+
+    <div style="margin-top:18px">
+      <label>Clips</label>
+      <div id="dsClips"><span class="muted">None yet.</span></div>
+    </div>
+
+    <div class="row" style="margin-top:16px">
+      <button id="dsExport" disabled>Export for training</button>
+      <button class="danger" id="dsWipe">Delete all clips</button>
+    </div>
+    <div class="status" id="dsExportStatus"></div>
+  </section>
 </main>
 
 <script>
@@ -297,12 +348,17 @@ $("enrol").onclick = async () => {
 // --- voices --------------------------------------------------------------
 async function refreshVoices() {
   const voices = await (await fetch("/api/voices")).json();
-  const list = $("voices"), sel = $("voiceSel");
+  const list = $("voices"), sel = $("voiceSel"), dsSel = $("dsVoice");
   sel.innerHTML = "";
+  // Same voices, two selectors: section 3 speaks with one, section 4 trains one.
+  const dsPrev = dsSel.value;
+  dsSel.innerHTML = "";
   if (!voices.length) {
     list.innerHTML = '<span class="muted">None yet.</span>';
     $("speak").disabled = true;
     $("speakHint").textContent = "Enrol a voice first.";
+    $("dsProgress").textContent = "Enrol a voice first.";
+    $("dsExport").disabled = true;
     return;
   }
   list.innerHTML = "";
@@ -365,9 +421,18 @@ async function refreshVoices() {
     const opt = document.createElement("option");
     opt.value = v.profile_id; opt.textContent = v.speaker_name;
     sel.appendChild(opt);
+
+    const dsOpt = document.createElement("option");
+    dsOpt.value = v.profile_id; dsOpt.textContent = v.speaker_name;
+    dsSel.appendChild(dsOpt);
   });
   $("speak").disabled = false;
   $("speakHint").textContent = "";
+
+  // Keep whichever voice was being trained selected across a refresh, so saving
+  // a clip does not silently move the next one onto a different speaker.
+  if (dsPrev && [...dsSel.options].some(o => o.value === dsPrev)) dsSel.value = dsPrev;
+  dsRefresh();
 }
 
 $("wipe").onclick = async () => {
@@ -489,6 +554,180 @@ $("speak").onclick = async () => {
 };
 
 loadConfig().then(refreshVoices);
+// --- 4 · training dataset -------------------------------------------------
+// Reuses blobToWav() and the recorder pattern above rather than duplicating a
+// second encoder: the browser is the only thing that can decode its own webm.
+let dsBlob = null, dsSeconds = 0, dsRecorder = null, dsChunks = [], dsPrompts = [], dsPromptAt = 0;
+
+const dsFmt = s => s >= 60 ? `${Math.floor(s/60)}m ${Math.round(s%60)}s` : `${s.toFixed(1)}s`;
+
+async function dsLoadPrompts() {
+  try { dsPrompts = await (await fetch("/api/prompts")).json(); } catch { dsPrompts = []; }
+  dsShowPrompt();
+}
+function dsShowPrompt() {
+  if (!dsPrompts.length) return;
+  const p = dsPrompts[dsPromptAt % dsPrompts.length];
+  $("dsPrompt").textContent = `${p.text}   —  ${p.register}`;
+}
+$("dsNextPrompt").onclick = () => { dsPromptAt++; dsShowPrompt(); };
+
+function dsVoiceId() { return $("dsVoice").value; }
+
+async function dsRefresh() {
+  const id = dsVoiceId();
+  if (!id) { $("dsProgress").textContent = "Enrol a voice first."; return; }
+  const d = await (await fetch(`/api/dataset/${id}`)).json();
+
+  $("dsBar").style.width = (d.fraction_of_target * 100).toFixed(1) + "%";
+  const need = Math.max(0, d.minimum_useful_seconds - d.total_seconds);
+  $("dsProgress").textContent =
+    `${d.clip_count} clips · ${dsFmt(d.total_seconds)} of ${dsFmt(d.target_seconds)} target` +
+    (d.usable ? " · enough to train on" : ` · ${dsFmt(need)} more before training is worth the compute`);
+
+  $("dsExport").disabled = d.clip_count === 0;
+  const box = $("dsClips");
+  if (!d.clips.length) { box.innerHTML = '<span class="muted">None yet.</span>'; return; }
+  box.innerHTML = "";
+  for (const c of d.clips.slice().reverse()) {
+    const row = document.createElement("div");
+    row.className = "row";
+    const secs = document.createElement("span");
+    secs.className = "muted";
+    secs.style.minWidth = "52px";
+    secs.textContent = c.duration_seconds.toFixed(1) + "s";
+    const txt = document.createElement("input");
+    txt.value = c.text;
+    txt.style.flex = "1";
+    txt.onchange = async () => {
+      const body = new FormData(); body.append("text", txt.value);
+      const r = await fetch(`/api/dataset/${id}/clips/${c.clip_id}`, { method: "PATCH", body });
+      setStatus($("dsStatus"), r.ok ? "Transcript updated." : "Could not update transcript.", r.ok ? "ok" : "err");
+    };
+    const del = document.createElement("button");
+    del.className = "danger"; del.textContent = "Delete";
+    del.onclick = async () => {
+      await fetch(`/api/dataset/${id}/clips/${c.clip_id}`, { method: "DELETE" });
+      dsRefresh();
+    };
+    row.append(secs, txt, del);
+    box.append(row);
+  }
+}
+
+async function dsAccept(blob) {
+  const { blob: wav, seconds } = await blobToWav(blob);
+  dsBlob = wav; dsSeconds = seconds;
+  $("dsPreview").src = URL.createObjectURL(wav);
+  $("dsPreview").hidden = false;
+  $("dsClipInfo").textContent = seconds.toFixed(1) + "s";
+  $("dsSave").disabled = false;
+
+  // Transcribe immediately: correcting text is far easier than typing it, and a
+  // wrong transcript teaches the model a false mapping, so it must be reviewable.
+  const id = dsVoiceId();
+  if (!id) return;
+  setStatus($("dsStatus"), "Transcribing…");
+  const body = new FormData();
+  body.append("clip", wav, "clip.wav");
+  const r = await fetch(`/api/dataset/${id}/transcribe`, { method: "POST", body });
+  if (!r.ok) return setStatus($("dsStatus"), "Transcription failed — type the text by hand.", "err");
+  const d = await r.json();
+  $("dsText").value = d.text;
+  setStatus($("dsStatus"), `Heard ${d.language}. Check the text, then save.`, "ok");
+}
+
+$("dsRec").onclick = async () => {
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+  catch { return setStatus($("dsStatus"), "Microphone permission denied.", "err"); }
+  dsChunks = [];
+  dsRecorder = new MediaRecorder(stream);
+  dsRecorder.ondataavailable = e => dsChunks.push(e.data);
+
+  const ctx = new AudioContext();
+  const analyser = ctx.createAnalyser();
+  ctx.createMediaStreamSource(stream).connect(analyser);
+  const buf = new Uint8Array(analyser.frequencyBinCount);
+  const t0 = Date.now();
+  const tick = () => {
+    if (dsRecorder.state !== "recording") return;
+    analyser.getByteTimeDomainData(buf);
+    const peak = Math.max(...buf.map(v => Math.abs(v - 128))) / 128;
+    $("dsLevel").style.width = Math.min(100, peak * 180) + "%";
+    $("dsClipInfo").textContent = ((Date.now() - t0) / 1000).toFixed(1) + "s";
+    requestAnimationFrame(tick);
+  };
+
+  dsRecorder.onstop = async () => {
+    stream.getTracks().forEach(t => t.stop());
+    ctx.close();
+    $("dsLevel").style.width = "0%";
+    await dsAccept(new Blob(dsChunks, { type: "audio/webm" }));
+  };
+  dsRecorder.start();
+  requestAnimationFrame(tick);
+  $("dsRec").disabled = true; $("dsStop").disabled = false;
+  setStatus($("dsStatus"), "Recording — speak naturally, then stop.");
+};
+
+$("dsStop").onclick = () => {
+  if (dsRecorder && dsRecorder.state === "recording") dsRecorder.stop();
+  $("dsRec").disabled = false; $("dsStop").disabled = true;
+};
+
+$("dsFile").onchange = async e => {
+  if (e.target.files[0]) await dsAccept(e.target.files[0]);
+};
+
+$("dsSave").onclick = async () => {
+  const id = dsVoiceId();
+  if (!id || !dsBlob) return;
+  const text = $("dsText").value.trim();
+  if (!text) return setStatus($("dsStatus"), "A transcript is required — the model learns text to voice.", "err");
+
+  $("dsSave").disabled = true;
+  const body = new FormData();
+  body.append("clip", dsBlob, "clip.wav");
+  body.append("text", text);
+  body.append("language", /[ऀ-ॿ]/.test(text) ? "hi" : "en");
+  const r = await fetch(`/api/dataset/${id}/clips`, { method: "POST", body });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    setStatus($("dsStatus"), d.detail || "Could not save the clip.", "err");
+    $("dsSave").disabled = false;
+    return;
+  }
+  const d = await r.json();
+  setStatus($("dsStatus"), `Saved. ${d.clip_count} clips, ${dsFmt(d.total_seconds)} total.`, "ok");
+  dsBlob = null; $("dsText").value = ""; $("dsPreview").hidden = true; $("dsClipInfo").textContent = "";
+  dsPromptAt++; dsShowPrompt();
+  dsRefresh();
+};
+
+$("dsExport").onclick = async () => {
+  const id = dsVoiceId();
+  setStatus($("dsExportStatus"), "Exporting…");
+  const r = await fetch(`/api/dataset/${id}/export`, { method: "POST", body: new FormData() });
+  const d = await r.json();
+  if (!r.ok) return setStatus($("dsExportStatus"), d.detail || "Export failed.", "err");
+  $("dsExportStatus").className = "status ok";
+  $("dsExportStatus").textContent =
+    `${d.clip_count} clips (${dsFmt(d.total_seconds)}) written.\n\n` +
+    `${d.plaintext_warning}\n\n` + d.next_steps.join("\n\n");
+  $("dsExportStatus").style.whiteSpace = "pre-wrap";
+};
+
+$("dsWipe").onclick = async () => {
+  const id = dsVoiceId();
+  if (!id) return;
+  await fetch(`/api/dataset/${id}`, { method: "DELETE" });
+  setStatus($("dsStatus"), "All clips deleted. The enrolled voice is untouched.", "ok");
+  dsRefresh();
+};
+
+$("dsVoice").onchange = dsRefresh;
+dsLoadPrompts();
 </script>
 </body>
 </html>
