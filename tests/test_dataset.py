@@ -229,3 +229,78 @@ def test_export_does_not_hand_out_the_stock_finetune_command(dataset, profile, t
     assert "voice-train-prep" in steps
     assert "f5-tts_finetune-cli" not in steps, "the stock CLI cannot fine-tune IndicF5 correctly"
     assert "prepare_csv_wavs" not in steps, "its output path depends on the tokenizer; prep prints it"
+
+
+# --- splitting a long take -------------------------------------------------
+
+
+def words(*specs):
+    """(text, start, end) triples as Whisper's word timestamps."""
+    return [{"word": t, "start": s, "end": e} for t, s, e in specs]
+
+
+def test_a_sentence_end_cuts_once_the_span_is_usable():
+    from voiceagent.voice_clone.dataset import plan_segments
+
+    spans = plan_segments(words(("नमस्ते", 0.0, 1.0), ("दोस्तों।", 1.0, 2.0),
+                                ("आज", 2.0, 3.0), ("मौसम", 3.0, 4.0), ("अच्छा है।", 4.0, 5.0)))
+    assert len(spans) == 2
+    assert spans[0][2].endswith("।") and spans[1][2].endswith("।")
+
+
+def test_commas_and_pauses_cut_because_whisper_writes_them_for_dandas():
+    """The measured failure: an 8.26s fixture with three clear Hindi sentences came
+    back as one 8.14s clip, because Whisper wrote commas where the speaker said
+    dandas. Sentence punctuation alone is not a sufficient boundary rule."""
+    from voiceagent.voice_clone.dataset import plan_segments
+
+    only_commas = words(*[(f"शब्द{i}," if i % 4 == 3 else f"शब्द{i}", i * 0.5, i * 0.5 + 0.5)
+                          for i in range(20)])
+    assert len(plan_segments(only_commas)) > 1
+
+
+def test_nothing_exceeds_the_batchable_length():
+    """A clip longer than batch_size_per_gpu in frames cannot be batched at all, so
+    it is skipped data rather than more data."""
+    from voiceagent.voice_clone.dataset import MAX_SEGMENT_SECONDS, plan_segments
+
+    # Continuous speech, no punctuation and no pauses at all.
+    run = words(*[(f"शब्द{i}", i * 0.4, i * 0.4 + 0.4) for i in range(80)])
+    spans = plan_segments(run)
+    assert spans
+    for begin, finish, _ in spans:
+        assert finish - begin <= MAX_SEGMENT_SECONDS + 0.5
+
+
+def test_a_short_tail_is_dropped_not_saved():
+    """A fragment labelled with a fragment of a transcript is exactly the false
+    mapping the store refuses when a clip is added by hand."""
+    from voiceagent.voice_clone.dataset import plan_segments
+
+    spans = plan_segments(words(("पहला", 0.0, 2.0), ("वाक्य।", 2.0, 4.0), ("अरे", 4.0, 4.3)))
+    assert len(spans) == 1, "the 0.3s tail must not become a clip"
+
+
+def test_no_words_yields_no_spans():
+    from voiceagent.voice_clone.dataset import plan_segments
+
+    assert plan_segments([]) == []
+    assert plan_segments(words(("  ", 0.0, 1.0))) == []
+
+
+def test_spans_do_not_overlap_and_stay_in_order():
+    from voiceagent.voice_clone.dataset import plan_segments
+
+    spans = plan_segments(words(*[(f"शब्द{i}" + ("।" if i % 5 == 4 else ""), i * 0.6, i * 0.6 + 0.6)
+                                  for i in range(30)]))
+    assert len(spans) > 2
+    for earlier, later in zip(spans, spans[1:]):
+        assert earlier[1] <= later[0], "a clip must not include audio from the next one"
+
+
+def test_the_max_segment_is_shorter_than_the_hand_added_clip_cap():
+    """The splitter is bound by what a training batch holds, which is stricter than
+    what a person may upload by hand."""
+    from voiceagent.voice_clone.dataset import MAX_CLIP_SECONDS, MAX_SEGMENT_SECONDS
+
+    assert MAX_SEGMENT_SECONDS < MAX_CLIP_SECONDS

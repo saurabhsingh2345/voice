@@ -178,6 +178,24 @@
     </div>
     <div class="status" id="dsStatus"></div>
 
+    <hr style="border:none;border-top:1px solid var(--line);margin:20px 0">
+
+    <label>Or record a long take and split it automatically</label>
+    <p class="muted" style="margin:.3rem 0 .6rem">
+      Talk for a minute or two — explain something, tell a story. It is split at word
+      boundaries into clips of up to 8 seconds, each with its transcript, in one pass.
+      This is where the volume comes from: the 94 prompts are only about four minutes.
+      <b>Whisper writes these transcripts, so check them below.</b>
+    </p>
+    <div class="row">
+      <button id="dsTakeRec">● Record long take</button>
+      <button id="dsTakeStop" disabled>■ Stop &amp; split</button>
+      <span class="muted">or</span>
+      <input type="file" id="dsTakeFile" accept="audio/*" style="flex:1; min-width:180px">
+    </div>
+    <div class="meter"><i id="dsTakeLevel"></i></div>
+    <div class="status" id="dsTakeStatus"></div>
+
     <div style="margin-top:18px">
       <label>Clips</label>
       <div id="dsClips"><span class="muted">None yet.</span></div>
@@ -745,6 +763,73 @@ $("dsWipe").onclick = async () => {
 
 $("dsVoice").onchange = dsRefresh;
 dsLoadPrompts();
+// --- long takes -----------------------------------------------------------
+// One Whisper pass over a whole take gives boundaries and aligned text together.
+// A VAD pass would find where speech stops but not what was said, so it would still
+// need a transcription call per segment.
+let dsTakeRecorder = null, dsTakeChunks = [];
+
+async function dsSplitTake(blob) {
+  const id = dsVoiceId();
+  if (!id) return setStatus($("dsTakeStatus"), "Pick a voice first.", "err");
+  setStatus($("dsTakeStatus"), "Converting…");
+  const { blob: wav, seconds } = await blobToWav(blob);
+  setStatus($("dsTakeStatus"), `Transcribing and splitting ${seconds.toFixed(0)}s — this takes a moment…`);
+
+  const body = new FormData();
+  body.append("clip", wav, "take.wav");
+  body.append("language", "hi");
+  const r = await fetch(`/api/dataset/${id}/segment`, { method: "POST", body });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) return setStatus($("dsTakeStatus"), d.detail || "Splitting failed.", "err");
+
+  setStatus($("dsTakeStatus"),
+    `Saved ${d.saved} clips (${dsFmt(d.seconds_added)}) from ${dsFmt(d.take_seconds)}` +
+    (d.skipped ? `, skipped ${d.skipped} too-short fragment(s)` : "") +
+    `. ${d.review_note}`, "ok");
+  dsRefresh();
+}
+
+$("dsTakeRec").onclick = async () => {
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+  catch { return setStatus($("dsTakeStatus"), "Microphone permission denied.", "err"); }
+  dsTakeChunks = [];
+  dsTakeRecorder = new MediaRecorder(stream);
+  dsTakeRecorder.ondataavailable = e => dsTakeChunks.push(e.data);
+
+  const ctx = new AudioContext();
+  const analyser = ctx.createAnalyser();
+  ctx.createMediaStreamSource(stream).connect(analyser);
+  const buf = new Uint8Array(analyser.frequencyBinCount);
+  const t0 = Date.now();
+  const tick = () => {
+    if (dsTakeRecorder.state !== "recording") return;
+    analyser.getByteTimeDomainData(buf);
+    const peak = Math.max(...buf.map(v => Math.abs(v - 128))) / 128;
+    $("dsTakeLevel").style.width = Math.min(100, peak * 180) + "%";
+    setStatus($("dsTakeStatus"), `Recording ${((Date.now() - t0) / 1000).toFixed(0)}s — keep going.`);
+    requestAnimationFrame(tick);
+  };
+  dsTakeRecorder.onstop = async () => {
+    stream.getTracks().forEach(t => t.stop());
+    ctx.close();
+    $("dsTakeLevel").style.width = "0%";
+    await dsSplitTake(new Blob(dsTakeChunks, { type: "audio/webm" }));
+  };
+  dsTakeRecorder.start();
+  requestAnimationFrame(tick);
+  $("dsTakeRec").disabled = true; $("dsTakeStop").disabled = false;
+};
+
+$("dsTakeStop").onclick = () => {
+  if (dsTakeRecorder && dsTakeRecorder.state === "recording") dsTakeRecorder.stop();
+  $("dsTakeRec").disabled = false; $("dsTakeStop").disabled = true;
+};
+
+$("dsTakeFile").onchange = async e => {
+  if (e.target.files[0]) await dsSplitTake(e.target.files[0]);
+};
 </script>
 </body>
 </html>

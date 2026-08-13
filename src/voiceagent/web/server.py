@@ -34,10 +34,13 @@ from voiceagent.tts.indic_engine import (
 from voiceagent.tts.remote_engine import RemoteTTSUnavailable
 from voiceagent.voice_clone.dataset import (
     MAX_CLIP_SECONDS,
+    MAX_SEGMENT_SECONDS,
+    MEDIUM_CUT_SECONDS,
     MIN_CLIP_SECONDS,
     MINIMUM_USEFUL_SECONDS,
     DatasetError,
     VoiceDataset,
+    plan_segments,
 )
 from voiceagent.voice_clone.engine import SAMPLE_RATE, ChatterboxCloneEngine
 from voiceagent.voice_clone.store import (
@@ -200,7 +203,9 @@ def _decode_upload(raw: bytes) -> tuple[np.ndarray, int, float]:
     return audio, sr, len(audio) / sr
 
 
-def _whisper(audio: np.ndarray, sample_rate: int, target: int = 16_000) -> dict:
+def _whisper(
+    audio: np.ndarray, sample_rate: int, target: int = 16_000, words: bool = False
+) -> dict:
     """Transcribe with Whisper, resampling to the 16 kHz it expects.
 
     Shared by the reference transcriber and the dataset transcriber. It was inline
@@ -213,7 +218,11 @@ def _whisper(audio: np.ndarray, sample_rate: int, target: int = 16_000) -> dict:
         idx = (np.arange(int(len(audio) * target / sample_rate)) * sample_rate / target).astype(int)
         audio = audio[idx[idx < len(audio)]]
     return mlx_whisper.transcribe(
-        audio, path_or_hf_repo="mlx-community/whisper-large-v3-turbo", fp16=True, verbose=None
+        audio,
+        path_or_hf_repo="mlx-community/whisper-large-v3-turbo",
+        fp16=True,
+        verbose=None,
+        word_timestamps=words,
     )
 
 
@@ -655,12 +664,20 @@ async def prompts() -> list[dict]:
     registers -- formal, colloquial, code-mixed, numeric -- to push the dataset
     across the range instead of letting it settle into one tone.
 
-    Eleven sentences is nowhere near a dataset. They are calibration, not corpus:
-    the bulk has to be natural speech, transcribed and corrected.
+    The whole set is about four minutes of speech, so it cannot get anyone to
+    thirty. That is the intended division of labour and worth being explicit about:
+    prompts buy *coverage* -- the retroflexes, aspirates, nuqta consonants and
+    clusters a model cannot learn without hearing, plus question and exclamation
+    contours it will never learn from declaratives. Volume has to come from free
+    speech. Reading the same 94 sentences ten times would overfit to them.
     """
     from voiceagent.eval import sentences as S
+    from voiceagent.train import prompts as P
 
     return [
+        {"slug": p.slug, "text": p.text, "register": p.register, "note": p.focus}
+        for p in P.ALL
+    ] + [
         {"slug": s.slug, "text": s.text, "register": s.register, "note": s.note}
         for s in S.HINDI_ONLY
     ]
@@ -714,6 +731,87 @@ async def transcribe_clip(profile_id: str, clip: UploadFile = Form(...)) -> dict
         "text": (result.get("text") or "").strip(),
         "language": result.get("language", "?"),
         "duration_seconds": round(duration, 2),
+    }
+
+
+@app.post("/api/dataset/{profile_id}/segment")
+async def segment_take(
+    profile_id: str, clip: UploadFile = Form(...), language: str = Form("hi")
+) -> dict:
+    """Split one long recording into many clips, in a single Whisper pass.
+
+    This exists because 150 separate recordings is the actual obstacle to building a
+    dataset, not the per-clip length cap. Raising that cap would not help: clips are
+    batched by frames at 93.8 frames per second, so a clip longer than
+    `batch_size_per_gpu` cannot be batched at all -- at the 800 frames this machine
+    trains comfortably at, that is 8.5 seconds. Longer clips are not more data, they
+    are skipped data.
+
+    Whisper's word timestamps do the splitting, rather than a separate VAD pass, for
+    a reason worth recording: VAD finds where speech stops, but it does not know what
+    was said in each span, so a VAD split still needs one transcription call per
+    segment. Word timestamps give boundaries *and* aligned text from one pass over
+    the whole take -- and the boundaries land between words rather than wherever the
+    energy happened to dip.
+
+    Segments are accumulated up to `MAX_SEGMENT_SECONDS` and cut at the last word
+    boundary that fits. Anything under `MIN_CLIP_SECONDS` is merged forward instead
+    of being saved, because a fragment with a fragment of a transcript is exactly the
+    false mapping this store refuses elsewhere.
+    """
+    if dataset.profiles.get(profile_id) is None:
+        raise HTTPException(404, "no such consented voice profile")
+
+    audio, sr, duration = _decode_upload(await clip.read())
+    if duration < MIN_CLIP_SECONDS:
+        raise HTTPException(400, f"Take is {duration:.1f}s; nothing to split.")
+
+    try:
+        result = await asyncio.to_thread(_whisper, audio, sr, 16_000, True)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, f"transcription failed: {exc}") from exc
+
+    words = [
+        w
+        for seg in result.get("segments", [])
+        for w in seg.get("words", [])
+        if (w.get("word") or "").strip()
+    ]
+    if not words:
+        raise HTTPException(
+            422, "Nothing intelligible was found in this take, so there is nothing to split."
+        )
+
+    saved, skipped, total = [], 0, 0.0
+    for begin, finish, text in plan_segments(words):
+        piece = audio[int(begin * sr) : int(finish * sr)]
+        try:
+            clip_saved = dataset.add_clip(
+                profile_id, _to_wav_bytes(piece, sr), text, len(piece) / sr, sr, language=language
+            )
+        except DatasetError:
+            skipped += 1
+            continue
+        saved.append({
+            "clip_id": clip_saved.clip_id,
+            "text": text,
+            "duration_seconds": clip_saved.duration_seconds,
+        })
+        total += clip_saved.duration_seconds
+
+    summary = dataset.summary(profile_id)
+    return {
+        "saved": len(saved),
+        "skipped": skipped,
+        "seconds_added": round(total, 2),
+        "take_seconds": round(duration, 2),
+        "clips": saved,
+        "clip_count": summary.clip_count,
+        "total_seconds": summary.total_seconds,
+        "review_note": (
+            "These transcripts come from Whisper, not from a prompt, so check them in "
+            "the clip list. It reads Hindi at about 4.8% CER and gets real words wrong."
+        ),
     }
 
 

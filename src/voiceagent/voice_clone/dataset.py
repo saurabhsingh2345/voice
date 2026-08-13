@@ -56,6 +56,83 @@ MIN_CLIP_SECONDS = 1.5
 MAX_CLIP_SECONDS = 20.0
 
 
+#: Longest span the take-splitter emits, and the span past which a weaker boundary
+#: is allowed to end one.
+#:
+#: MAX is below MAX_CLIP_SECONDS deliberately. Training batches by frames at 93.8
+#: frames per second, so a clip longer than `batch_size_per_gpu` cannot be batched
+#: at all -- at the 800 frames this machine trains comfortably at, that is 8.5s.
+#: A longer clip is not more data, it is skipped data.
+MAX_SEGMENT_SECONDS = 8.0
+MEDIUM_CUT_SECONDS = 3.5
+
+#: A pause at least this long counts as a prosodic boundary.
+PAUSE_SECONDS = 0.35
+
+_STRONG_ENDINGS = ("।", "॥", "?", "!", ".")
+_MEDIUM_ENDINGS = (",", ";", ":")
+
+
+def plan_segments(
+    words: list[dict],
+    max_seconds: float = MAX_SEGMENT_SECONDS,
+    medium_seconds: float = MEDIUM_CUT_SECONDS,
+    min_seconds: float = MIN_CLIP_SECONDS,
+) -> list[tuple[float, float, str]]:
+    """Group timed words into (start, end, text) spans fit to be training clips.
+
+    Takes Whisper's word timestamps rather than a VAD pass, because a VAD knows
+    where speech stopped but not what was said in each span -- so a VAD split still
+    needs one transcription call per segment, while word timestamps give boundaries
+    and aligned text from one pass over the whole take.
+
+    Three tiers of boundary, because sentence punctuation alone under-splits badly.
+    Measured on an 8.26s fixture containing three clear Hindi sentences: Whisper
+    wrote commas where the speaker said dandas, so a sentence-only rule returned one
+    8.14s clip. Adding comma and pause boundaries returned two clips of 4.4s and
+    3.5s.
+
+      strong  -- sentence-final punctuation, cuts once the span is usable at all
+      medium  -- a comma or a pause, cuts only past `medium_seconds` so the clip can
+                 stand alone rather than being a fragment with a fragment of text
+      hard    -- `max_seconds`, so nothing exceeds what a batch can hold
+
+    Spans shorter than `min_seconds` are dropped rather than saved: a fragment
+    labelled with a fragment of a transcript is the false text-to-audio mapping this
+    store refuses everywhere else.
+    """
+    spans: list[tuple[float, float, str]] = []
+    if not words:
+        return spans
+
+    start = words[0]["start"]
+    buffer: list[str] = []
+
+    for index, word in enumerate(words):
+        text = (word.get("word") or "").strip()
+        if not text:
+            continue
+        buffer.append(text)
+        span = word["end"] - start
+        last = index == len(words) - 1
+        gap_next = 0.0 if last else words[index + 1]["start"] - word["end"]
+
+        strong = text.endswith(_STRONG_ENDINGS) and span >= min_seconds
+        medium = (
+            text.endswith(_MEDIUM_ENDINGS) or gap_next >= PAUSE_SECONDS
+        ) and span >= medium_seconds
+        if not (last or span >= max_seconds or strong or medium):
+            continue
+
+        joined = " ".join(buffer).strip()
+        if word["end"] - start >= min_seconds and joined:
+            spans.append((start, word["end"], joined))
+        buffer = []
+        start = word["end"] if last else words[index + 1]["start"]
+
+    return spans
+
+
 class DatasetError(RuntimeError):
     """Raised when a clip cannot be accepted into the dataset."""
 
