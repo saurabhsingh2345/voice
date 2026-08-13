@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import numpy as np
 
@@ -259,6 +260,42 @@ def _limit(audio: np.ndarray, ceiling: float = 0.99) -> np.ndarray:
     return (audio * (ceiling / peak)).astype(np.float32)
 
 
+
+def _read_state(path: str) -> dict:
+    """Load model weights from whichever layout the file happens to use.
+
+    Three exist and all three turn up in this project:
+
+      * `model.safetensors` as published by IndicF5 -- an EMA wrapper around a
+        torch.compile'd module, so keys read `ema_model._orig_mod.transformer...`
+      * a fine-tune checkpoint from f5-tts's trainer -- a torch .pt holding
+        `model_state_dict` and `ema_model_state_dict` side by side
+      * the prepared checkpoint written by `train.prepare_indic` -- safetensors with
+        keys reading `ema_model.transformer...`
+
+    The EMA weights are preferred over the online ones wherever both are present:
+    that is the averaged model, and it is what f5-tts's own inference path uses.
+    Picking the wrong one produces a model that works but is measurably worse, with
+    nothing to indicate why.
+    """
+    import torch
+    from safetensors.torch import load_file
+
+    if str(path).endswith(".safetensors"):
+        raw = load_file(path, device="cpu")
+    else:
+        blob = torch.load(path, weights_only=True, map_location="cpu")
+        raw = blob.get("ema_model_state_dict") or blob.get("model_state_dict") or blob
+
+    state = {}
+    for key, value in raw.items():
+        if key in {"initted", "step", "update"}:
+            continue
+        clean = key.replace("ema_model._orig_mod.", "").replace("ema_model.", "")
+        clean = clean.replace("_orig_mod.", "")
+        state[clean] = value
+    return state
+
 class IndicTTSAccessError(RuntimeError):
     """Raised when the model is gated and the machine is not authenticated."""
 
@@ -281,6 +318,7 @@ class IndicTTSEngine(TTSEngine):
     def __init__(
         self,
         repo: str = INDICF5_REPO,
+        checkpoint: "Path | str | None" = None,
         reference_audio: np.ndarray | None = None,
         reference_text: str = "",
         reference_sample_rate: int = 24_000,
@@ -288,6 +326,10 @@ class IndicTTSEngine(TTSEngine):
         seed: int | None = DEFAULT_SEED,
     ) -> None:
         self.repo = repo
+        #: A locally fine-tuned checkpoint to use instead of the stock weights. The
+        #: vocab still comes from the repo: fine-tuning does not change the
+        #: tokenizer, and a mismatched vocab would silently shift every text id.
+        self.checkpoint = Path(checkpoint) if checkpoint else None
         self.seed = seed
         #: IndicF5 is a cloning model: it needs a reference clip plus that
         #: clip's transcript to condition on.
@@ -329,8 +371,13 @@ class IndicTTSEngine(TTSEngine):
         from f5_tts.model.utils import get_tokenizer
 
         try:
-            weights_path = hf_hub_download(self.repo, filename="model.safetensors")
             vocab_path = hf_hub_download(self.repo, filename="checkpoints/vocab.txt")
+            if self.checkpoint is not None:
+                if not self.checkpoint.exists():
+                    raise FileNotFoundError(f"no such checkpoint: {self.checkpoint}")
+                weights_path = str(self.checkpoint)
+            else:
+                weights_path = hf_hub_download(self.repo, filename="model.safetensors")
         except Exception as exc:  # noqa: BLE001
             if "gated" in str(exc).lower() or "401" in str(exc):
                 raise IndicTTSAccessError(GATED_HELP.format(repo=self.repo)) from exc
@@ -368,12 +415,7 @@ class IndicTTSEngine(TTSEngine):
         # The checkpoint was saved through an EMA wrapper around a compiled
         # module, so every key carries an "ema_model._orig_mod." prefix that
         # CFM does not have. Strip it rather than reconstructing their wrapper.
-        raw = load_file(weights_path, device="cpu")
-        state = {
-            key.removeprefix("ema_model._orig_mod."): value
-            for key, value in raw.items()
-            if key.startswith("ema_model._orig_mod.")
-        }
+        state = _read_state(weights_path)
         if not state:
             raise RuntimeError(f"no ema_model weights found in {weights_path}")
 

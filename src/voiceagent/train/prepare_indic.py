@@ -143,6 +143,26 @@ def write_config(dataset_name: str, vocab: Path, destination: Path) -> Path:
     config["datasets"]["name"] = dataset_name
     config["ckpts"]["logger"] = None  # no wandb account required to train locally
 
+    # Pin save_dir, and pin it to exactly where the pretrained checkpoint is written.
+    #
+    # This is the one that cost a real training run. f5-tts has TWO conventions for
+    # where checkpoints live and they do not agree:
+    #
+    #   f5-tts_finetune-cli   ckpts/<dataset_name>
+    #   f5_tts.train.train    ckpts/<cfg.ckpts.save_dir>, whose stock template is
+    #                         ckpts/${model.name}_${mel_spec_type}_${tokenizer}_${name}
+    #
+    # `Trainer.load_checkpoint` looks for `pretrained_*` in the second, and when it
+    # finds nothing it does not warn -- it trains the freshly constructed model,
+    # which means from random weights. A 22-epoch run reached loss 1.73 that way and
+    # looked entirely healthy: the curve falls just as convincingly when a model is
+    # learning Hindi from scratch as when it is being fine-tuned, and 10 minutes of
+    # audio cannot teach it from scratch. Nothing errors, and the only clue is that
+    # the *initial* loss is high (8.24 here) where a loaded IndicF5 would start low.
+    #
+    # Overriding the template so both conventions point at one directory is the fix.
+    config["ckpts"]["save_dir"] = f"ckpts/{dataset_name}"
+
     destination.write_text(yaml.safe_dump(config, sort_keys=False, allow_unicode=True))
     return destination
 
@@ -195,6 +215,33 @@ def place_base_vocab(vocab: Path, venv_data: Path) -> Path:
     return destination
 
 
+def verify_trainer_will_load(config_path: Path, checkpoint: Path) -> None:
+    """Resolve the trainer's checkpoint_path exactly as train.py does, and check it.
+
+    Not belt-and-braces. `Trainer.load_checkpoint` is silent when it finds nothing to
+    load -- it trains the freshly built model from random weights and the loss curve
+    looks healthy the whole way down. A wasted 22-epoch run is the cheapest possible
+    version of that mistake; a wasted week is the expensive one. So the assumption
+    gets checked at preparation time, when it is still free to be wrong.
+    """
+    import yaml
+
+    config = yaml.safe_load(config_path.read_text())
+    resolved = Path(
+        os.path.normpath(str(files("f5_tts").joinpath(f"../../{config['ckpts']['save_dir']}")))
+    )
+    if resolved.resolve() != checkpoint.parent.resolve():
+        raise SystemExit(
+            "The trainer would look for a pretrained checkpoint in\n"
+            f"  {resolved}\n"
+            "but it was written to\n"
+            f"  {checkpoint.parent}\n"
+            "It would find nothing, train from random weights, and never say so."
+        )
+    if not checkpoint.exists():
+        raise SystemExit(f"No pretrained checkpoint at {checkpoint}.")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("dataset_name", help="the profile id you exported, e.g. e214ec611523")
@@ -222,6 +269,9 @@ def main(argv: list[str] | None = None) -> int:
     config = write_config(args.dataset_name, vocab, ckpt_dir / "IndicF5_finetune.yaml")
     print(f"config             : {config}")
     print(f"                     pe_attn_head=1, text_mask_padding=False, tokenizer=custom")
+
+    verify_trainer_will_load(config, target)
+    print(f"verified           : the trainer's checkpoint_path resolves to {target.parent.name}/")
 
     training_dir = PROJECT_ROOT / "data" / "training" / args.dataset_name
     print("\nNext:\n")

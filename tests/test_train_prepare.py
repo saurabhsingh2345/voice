@@ -13,6 +13,8 @@ import pytest
 import torch
 from safetensors.torch import load_file, save_file
 
+from pathlib import Path
+
 from voiceagent.train import prepare_indic
 
 
@@ -123,3 +125,46 @@ def test_the_written_config_carries_the_overrides(tmp_path, monkeypatch):
     assert config["model"]["arch"]["checkpoint_activations"] is True
     # wandb must not be required to train locally.
     assert config["ckpts"]["logger"] is None
+
+
+# --- the checkpoint has to be where the trainer looks --------------------
+
+
+def test_save_dir_is_pinned_to_where_the_checkpoint_is_written(tmp_path):
+    """The mistake that cost a 22-epoch run. f5-tts has two conventions:
+    f5-tts_finetune-cli uses ckpts/<dataset_name>, while f5_tts.train.train uses
+    ckpts/<cfg.ckpts.save_dir> whose stock template expands to
+    ckpts/<model_name>_<mel>_<tokenizer>_<dataset>. Trainer.load_checkpoint finds
+    nothing in the second, does not warn, and trains from random weights -- and the
+    loss curve falls just as convincingly as a real fine-tune."""
+    import yaml
+
+    written = prepare_indic.write_config("myvoice", tmp_path / "vocab.txt", tmp_path / "c.yaml")
+    config = yaml.safe_load(written.read_text())
+    assert config["ckpts"]["save_dir"] == "ckpts/myvoice"
+    assert "${" not in config["ckpts"]["save_dir"], "an unexpanded template moves the directory"
+
+
+def test_preparation_refuses_when_the_trainer_would_look_elsewhere(tmp_path, monkeypatch):
+    import yaml
+
+    config_path = tmp_path / "c.yaml"
+    config_path.write_text(yaml.safe_dump({"ckpts": {"save_dir": "ckpts/somewhere-else"}}))
+    checkpoint = tmp_path / "ckpts" / "myvoice" / "pretrained_indicf5.safetensors"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_bytes(b"x")
+
+    with pytest.raises(SystemExit, match="find nothing"):
+        prepare_indic.verify_trainer_will_load(config_path, checkpoint)
+
+
+def test_preparation_refuses_when_the_checkpoint_is_missing(tmp_path):
+    import os
+    import yaml
+    from importlib.resources import files
+
+    ckpts = Path(os.path.normpath(str(files("f5_tts").joinpath("../../ckpts")))) / "gone"
+    config_path = tmp_path / "c.yaml"
+    config_path.write_text(yaml.safe_dump({"ckpts": {"save_dir": "ckpts/gone"}}))
+    with pytest.raises(SystemExit, match="No pretrained checkpoint"):
+        prepare_indic.verify_trainer_will_load(config_path, ckpts / "pretrained_indicf5.safetensors")
