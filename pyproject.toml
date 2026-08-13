@@ -70,6 +70,7 @@ indic = [
     "f5-tts>=1.1",
     "pydub>=0.25",
     "soundfile>=0.12",  # already transitive via librosa; named because the service reads WAVs directly
+    "pyyaml>=6.0",      # transitive via hydra, but train/prepare_indic.py imports it directly
 ]
 # Talk to an Indic TTS service running on another machine. Deliberately separate
 # from `indic`: the point of this extra is that the machine installing it does
@@ -84,6 +85,7 @@ voice-doctor = "voiceagent.diagnostics.doctor:main"
 voice-web = "voiceagent.web.server:main"
 voice-chat = "voiceagent.orchestration.loop:main"
 voice-tts-service = "voiceagent.web.tts_service:main"
+voice-train-prep = "voiceagent.train.prepare_indic:main"
 
 [build-system]
 requires = ["hatchling"]
