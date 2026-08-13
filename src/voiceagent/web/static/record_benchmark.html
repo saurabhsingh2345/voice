@@ -1,0 +1,210 @@
+<title>Record the benchmark sentences</title>
+<style>
+  :root {
+    --paper:#F2F1EE; --card:#FFFFFF; --ink:#17161A; --soft:#4A4851; --muted:#7C7A83;
+    --line:#D9D7D2; --accent:#1F5138; --accent-soft:#E2EDE6; --warn:#8A5A00; --done:#1F5138;
+    --shadow:0 1px 2px rgba(0,0,0,.05), 0 14px 34px -22px rgba(0,0,0,.3);
+    --body:"Noto Sans Devanagari", Optima, "Gill Sans MT", system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:#111013; --card:#1B1A1F; --ink:#EBE9E5; --soft:#B9B6B1; --muted:#85828A;
+      --line:#302D35; --accent:#5FB086; --accent-soft:#17281F; --warn:#D8A54A; --done:#5FB086;
+      --shadow:0 1px 2px rgba(0,0,0,.5), 0 14px 34px -22px rgba(0,0,0,.85);
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper:#111013; --card:#1B1A1F; --ink:#EBE9E5; --soft:#B9B6B1; --muted:#85828A;
+    --line:#302D35; --accent:#5FB086; --accent-soft:#17281F; --warn:#D8A54A; --done:#5FB086;
+    --shadow:0 1px 2px rgba(0,0,0,.5), 0 14px 34px -22px rgba(0,0,0,.85);
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--paper); color:var(--ink); font-family:var(--body);
+    font-size:17px; line-height:1.6; display:flex; justify-content:center; min-height:100vh; }
+  main { width:100%; max-width:660px; padding:40px 24px 90px; }
+  h1 { font-size:1.55rem; margin:0 0 6px; font-weight:600; }
+  .sub { color:var(--muted); font-size:.94rem; margin:0 0 24px; }
+  .card { background:var(--card); border:1px solid var(--line); box-shadow:var(--shadow);
+    border-radius:6px; padding:28px; }
+  .sentence { font-size:1.5rem; line-height:1.5; margin:6px 0 4px; }
+  .targets { font-size:.8rem; color:var(--muted); letter-spacing:.02em; }
+  button { font:inherit; font-size:1rem; padding:13px 20px; border-radius:5px;
+    border:1px solid var(--line); background:var(--paper); color:var(--ink); cursor:pointer; }
+  button:hover:not(:disabled) { border-color:var(--accent); }
+  button:disabled { opacity:.45; cursor:default; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) button.primary { color:#0E1611; } }
+  :root[data-theme="dark"] button.primary { color:#0E1611; }
+  button.rec { background:#9C2C24; border-color:#9C2C24; color:#fff; }
+  .row { display:flex; gap:12px; flex-wrap:wrap; margin-top:20px; align-items:center; }
+  .meter { height:8px; background:var(--line); border-radius:4px; overflow:hidden; margin-top:16px; }
+  .meter i { display:block; height:100%; background:var(--accent); width:0%; }
+  .count { font-size:.84rem; color:var(--muted); margin-top:8px; font-variant-numeric:tabular-nums; }
+  .status { font-size:.9rem; margin-top:16px; min-height:1.4em; }
+  .status.ok { color:var(--done); }
+  .status.err { color:var(--warn); }
+  audio { width:100%; margin-top:14px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(52px,1fr)); gap:8px; margin-top:22px; }
+  .pill { border:1px solid var(--line); border-radius:4px; padding:7px 0; text-align:center;
+    font-size:.8rem; cursor:pointer; font-variant-numeric:tabular-nums; }
+  .pill.has { background:var(--accent-soft); border-color:var(--accent); color:var(--accent); font-weight:600; }
+  .pill.now { outline:2px solid var(--accent); outline-offset:1px; }
+  .note { font-size:.87rem; color:var(--muted); margin-top:22px; }
+</style>
+
+<main>
+  <h1>Record the benchmark sentences</h1>
+  <p class="sub">Read each one the way you normally speak. These become the fair comparison against the model.</p>
+
+  <div class="card">
+    <p class="targets" id="targets"></p>
+    <p class="sentence" id="sentence">…</p>
+
+    <div class="row">
+      <button class="rec" id="rec">● Record</button>
+      <button id="stop" disabled>■ Stop</button>
+      <button id="prev">←</button>
+      <button id="next">→</button>
+    </div>
+
+    <div class="meter"><i id="level"></i></div>
+    <div class="count" id="count"></div>
+    <audio id="playback" controls hidden></audio>
+    <div class="status" id="status"></div>
+
+    <div class="grid" id="grid"></div>
+
+    <p class="note">
+      Your real clips and the model's are compared on <b>the same sentences</b>, so the only
+      difference a listener can hear is the voice. Re-record any of them by clicking its number.
+    </p>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let sentences = [], at = 0, recorder = null, chunks = [], stream = null;
+
+// Reuses the WAV conversion approach from the main page: MediaRecorder gives webm,
+// which libsndfile cannot read, and the browser is the only thing that can decode
+// its own recording.
+async function blobToWav(blob) {
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const decoded = await ctx.decodeAudioData(await blob.arrayBuffer());
+  await ctx.close();
+  const n = decoded.length, mono = new Float32Array(n);
+  for (let c = 0; c < decoded.numberOfChannels; c++) {
+    const d = decoded.getChannelData(c);
+    for (let i = 0; i < n; i++) mono[i] += d[i] / decoded.numberOfChannels;
+  }
+  const sr = decoded.sampleRate, buf = new ArrayBuffer(44 + n * 2), view = new DataView(buf);
+  const str = (o, s) => { for (let i = 0; i < s.length; i++) view.setUint8(o + i, s.charCodeAt(i)); };
+  str(0, "RIFF"); view.setUint32(4, 36 + n * 2, true); str(8, "WAVEfmt ");
+  view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+  view.setUint32(24, sr, true); view.setUint32(28, sr * 2, true);
+  view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+  str(36, "data"); view.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) {
+    const s = Math.max(-1, Math.min(1, mono[i]));
+    view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+  return { blob: new Blob([buf], { type: "audio/wav" }), seconds: n / sr };
+}
+
+const setStatus = (m, c = "") => { $("status").textContent = m; $("status").className = "status " + c; };
+
+async function load() {
+  sentences = await (await fetch("/api/benchmark/sentences")).json();
+  const firstMissing = sentences.findIndex(s => !s.recorded);
+  at = firstMissing === -1 ? 0 : firstMissing;
+  render();
+}
+
+function render() {
+  const s = sentences[at];
+  $("sentence").textContent = s.text;
+  $("targets").textContent = s.targets;
+  $("playback").hidden = true;
+  const done = sentences.filter(x => x.recorded).length;
+  $("level").style.width = `${(done / sentences.length) * 100}%`;
+  $("count").textContent = `${done} of ${sentences.length} recorded · showing ${at + 1}`;
+  setStatus(s.recorded ? "Recorded. Record again to replace it." : "", s.recorded ? "ok" : "");
+
+  const grid = $("grid"); grid.innerHTML = "";
+  sentences.forEach((x, i) => {
+    const b = document.createElement("div");
+    b.className = "pill" + (x.recorded ? " has" : "") + (i === at ? " now" : "");
+    b.textContent = i + 1;
+    b.onclick = () => { at = i; render(); };
+    grid.appendChild(b);
+  });
+}
+
+$("rec").onclick = async () => {
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+  catch { return setStatus("Microphone permission denied.", "err"); }
+  chunks = [];
+  recorder = new MediaRecorder(stream);
+  recorder.ondataavailable = e => chunks.push(e.data);
+
+  const ctx = new AudioContext(), an = ctx.createAnalyser();
+  ctx.createMediaStreamSource(stream).connect(an);
+  const buf = new Uint8Array(an.frequencyBinCount), t0 = Date.now();
+  const tick = () => {
+    if (!recorder || recorder.state !== "recording") return;
+    an.getByteTimeDomainData(buf);
+    const peak = Math.max(...buf.map(v => Math.abs(v - 128))) / 128;
+    $("level").style.width = Math.min(100, peak * 180) + "%";
+    setStatus(`Recording ${((Date.now() - t0) / 1000).toFixed(1)}s…`);
+    requestAnimationFrame(tick);
+  };
+
+  recorder.onstop = async () => {
+    stream.getTracks().forEach(t => t.stop());
+    ctx.close();
+    const { blob, seconds } = await blobToWav(new Blob(chunks, { type: "audio/webm" }));
+    $("playback").src = URL.createObjectURL(blob);
+    $("playback").hidden = false;
+
+    const body = new FormData();
+    body.append("slug", sentences[at].slug);
+    body.append("clip", blob, "clip.wav");
+    const r = await fetch("/api/benchmark/record", { method: "POST", body });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      return setStatus(d.detail || "Could not save.", "err");
+    }
+    const d = await r.json();
+    sentences[at].recorded = true;
+    setStatus(`Saved ${d.seconds}s — ${d.recorded} of ${d.total} done.`, "ok");
+    render();
+    // Advance automatically; the point is to get through twelve quickly.
+    if (at < sentences.length - 1 && sentences.slice(at + 1).some(s => !s.recorded)) {
+      setTimeout(() => {
+        while (at < sentences.length - 1 && sentences[at].recorded) at++;
+        render();
+      }, 700);
+    }
+  };
+
+  recorder.start();
+  requestAnimationFrame(tick);
+  $("rec").disabled = true; $("stop").disabled = false;
+};
+
+$("stop").onclick = () => {
+  if (recorder && recorder.state === "recording") recorder.stop();
+  $("rec").disabled = false; $("stop").disabled = true;
+  $("level").style.width = "0%";
+};
+
+$("prev").onclick = () => { if (at > 0) { at--; render(); } };
+$("next").onclick = () => { if (at < sentences.length - 1) { at++; render(); } };
+document.addEventListener("keydown", e => {
+  if (e.key === " ") { e.preventDefault(); ($("rec").disabled ? $("stop") : $("rec")).click(); }
+  if (e.key === "ArrowLeft") $("prev").click();
+  if (e.key === "ArrowRight") $("next").click();
+});
+
+load();
+</script>

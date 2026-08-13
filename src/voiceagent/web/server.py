@@ -1069,6 +1069,73 @@ async def listen_results(benchmark_id: str, include_rushed: bool = False) -> dic
     }
 
 
+@app.get("/record-benchmark", response_class=HTMLResponse)
+async def record_benchmark_page() -> str:
+    return (STATIC / "record_benchmark.html").read_text()
+
+
+@app.get("/api/benchmark/sentences")
+async def benchmark_sentences() -> list[dict]:
+    """The held-out sentences, with which already have a real recording."""
+    from voiceagent.eval import heldout
+    from voiceagent.eval.build_benchmark import REAL_HELDOUT
+
+    return [
+        {
+            "slug": s.slug,
+            "text": s.text,
+            "targets": s.targets,
+            "recorded": (REAL_HELDOUT / f"{s.slug}.wav").exists(),
+        }
+        for s in heldout.SENTENCES
+    ]
+
+
+@app.post("/api/benchmark/record")
+async def benchmark_record(slug: str = Form(...), clip: UploadFile = Form(...)) -> dict:
+    """Save the speaker reading one held-out sentence.
+
+    This exists to remove a confound that made the first benchmark
+    uninterpretable. The "real" condition used training clips -- spontaneous speech,
+    different sentences from the synthetic condition. So a listener could sort the
+    two by *content and speaking style* rather than by voice, and the numbers showed
+    it from both directions: identity was easy to call, while naturalness scored the
+    synthetic clips ABOVE the real ones, because clean read sentences sound tidier
+    than real speech with disfluencies in it.
+
+    With the speaker reading the same held-out sentences the model synthesises, real
+    and synthetic differ in one thing only, which is the thing being measured.
+    """
+    from voiceagent.eval import heldout
+    from voiceagent.eval.build_benchmark import REAL_HELDOUT
+
+    try:
+        heldout.by_slug(slug)
+    except KeyError:
+        raise HTTPException(404, f"no such held-out sentence: {slug}") from None
+
+    audio, sr, duration = _decode_upload(await clip.read())
+    if duration < 1.0:
+        raise HTTPException(400, f"Recording is {duration:.1f}s -- too short to judge.")
+
+    REAL_HELDOUT.mkdir(parents=True, exist_ok=True)
+    path = REAL_HELDOUT / f"{slug}.wav"
+    path.write_bytes(_to_wav_bytes(audio, sr))
+    done = len(list(REAL_HELDOUT.glob("*.wav")))
+    return {"slug": slug, "seconds": round(duration, 2), "recorded": done,
+            "total": len(heldout.SENTENCES)}
+
+
+@app.delete("/api/benchmark/record/{slug}")
+async def benchmark_unrecord(slug: str) -> dict:
+    from voiceagent.eval.build_benchmark import REAL_HELDOUT
+
+    path = REAL_HELDOUT / f"{slug}.wav"
+    if path.exists():
+        path.unlink()
+    return {"deleted": slug}
+
+
 def main() -> int:
     import uvicorn
 

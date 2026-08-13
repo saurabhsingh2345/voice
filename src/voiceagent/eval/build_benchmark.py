@@ -53,6 +53,11 @@ TARGET_RMS = 0.1
 
 WORK = Path("eval_out/benchmark_samples")
 
+#: The speaker reading the held-out sentences. Preferred over training clips for
+#: the "real" condition, because it makes real and synthetic differ in exactly one
+#: thing. See the confound note in `web.server.benchmark_record`.
+REAL_HELDOUT = WORK / "real_heldout"
+
 
 def match_loudness(audio: np.ndarray, target: float = TARGET_RMS) -> np.ndarray:
     rms = float(np.sqrt((audio.astype(np.float64) ** 2).mean())) if audio.size else 0.0
@@ -172,23 +177,45 @@ def main(argv: list[str] | None = None) -> int:
     print(f"sentences : {len(sentences)} held out")
     print(f"checkpoint: {'present' if checkpoint.exists() else 'MISSING — no fine-tuned condition'}\n")
 
-    # 1. real
-    print("real recordings:")
-    reals = real_clips(args.profile_id, len(sentences))
+    # 1. real -- content-matched if the speaker has read the held-out sentences.
+    #
+    # The first benchmark used training clips here, and that made both tests
+    # uninterpretable in opposite directions. Content and speaking style differed
+    # from the synthetic condition, so identity could be called on familiarity
+    # rather than voice; and naturalness scored the synthetic clips ABOVE the real
+    # ones, because clean read sentences sound tidier than spontaneous speech with
+    # disfluencies. Same sentences on both sides removes it.
+    matched = {s.slug: REAL_HELDOUT / f"{s.slug}.wav" for s in sentences}
+    matched = {slug: path for slug, path in matched.items() if path.exists()}
+
     samples["real"] = {}
-    for i, (clip_id, audio, clip_rate) in enumerate(reals):
-        slug = f"r{i+1}"
-        samples["real"][slug] = write(WORK / "real" / f"{slug}.wav", audio, clip_rate)
-        print(f"    {slug}: {len(audio)/clip_rate:5.2f}s")
+    reals: list[tuple[str, np.ndarray, int]] = []
+    if len(matched) >= max(3, len(sentences) // 2):
+        print(f"real recordings: {len(matched)} content-matched (held-out sentences)")
+        for slug, path in sorted(matched.items()):
+            audio, clip_rate = sf.read(path, dtype="float32")
+            if audio.ndim > 1:
+                audio = audio.mean(axis=1)
+            samples["real"][slug] = write(WORK / "real" / f"{slug}.wav", audio, clip_rate)
+            reals.append((slug, audio, clip_rate))
+            print(f"    {slug}: {len(audio)/clip_rate:5.2f}s")
+    else:
+        print("real recordings: falling back to TRAINING CLIPS -- content will not match")
+        print(f"  record the held-out sentences at /record-benchmark to fix this")
+        print(f"  ({len(matched)} of {len(sentences)} recorded so far)")
+        for i, (clip_id, audio, clip_rate) in enumerate(real_clips(args.profile_id, len(sentences))):
+            slug = f"r{i+1}"
+            samples["real"][slug] = write(WORK / "real" / f"{slug}.wav", audio, clip_rate)
+            reals.append((slug, audio, clip_rate))
+            print(f"    {slug}: {len(audio)/clip_rate:5.2f}s")
 
     # 2. vocoded control
     print("\nvocoder control (real speech through mel + vocoder):")
     samples["vocoded"] = {}
-    for i, (clip_id, audio, clip_rate) in enumerate(reals):
+    for slug, audio, clip_rate in reals:
         done = vocode(audio, clip_rate)
         if done is None:
             break
-        slug = f"r{i+1}"
         samples["vocoded"][slug] = write(WORK / "vocoded" / f"{slug}.wav", done)
         print(f"    {slug}: {len(done)/24000:5.2f}s")
     if not samples["vocoded"]:
