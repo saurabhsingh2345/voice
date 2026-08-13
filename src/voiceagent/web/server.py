@@ -962,6 +962,113 @@ async def clear_dataset(profile_id: str) -> dict:
     return {"deleted_clips": dataset.delete_all(profile_id)}
 
 
+# --- blind listening test -------------------------------------------------
+#
+# Serves the A/B harness. The listener endpoints deliberately expose item ids and
+# audio only; the item-to-system mapping stays in the manifest, which nothing here
+# returns. See eval.abtest for why the blinding is structural rather than a promise.
+
+
+def _bench(benchmark_id: str):
+    from voiceagent.eval.abtest import Benchmark
+
+    resolved = benchmark_id if benchmark_id != "latest" else Benchmark.latest()
+    if not resolved:
+        raise HTTPException(404, "No benchmark has been built yet.")
+    try:
+        return Benchmark.load(resolved)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.get("/listen", response_class=HTMLResponse)
+async def listen_page() -> str:
+    return (STATIC / "listen.html").read_text()
+
+
+@app.get("/api/listen/{benchmark_id}/session")
+async def listen_session(benchmark_id: str, listener: str, kind: str) -> dict:
+    """The listener's queue: every item id in their order, and which they finished.
+
+    Returns no system names and no transcripts. The sentence text is withheld on
+    purpose for the identity test -- a listener who can read along is judging
+    against the text rather than deciding whether a human said it.
+    """
+    from voiceagent.eval.abtest import IDENTITY, NATURALNESS
+
+    if kind not in (IDENTITY, NATURALNESS):
+        raise HTTPException(400, f"kind must be {IDENTITY!r} or {NATURALNESS!r}")
+    bench = _bench(benchmark_id)
+    order = bench.order_for(listener, kind)
+    done = {r["item_id"] for r in bench.all_ratings() if r["listener"] == bench.ratings_path(listener).stem}
+    return {
+        "benchmark_id": bench.benchmark_id,
+        "kind": kind,
+        "items": order,
+        "done": [i for i in order if i in done],
+    }
+
+
+@app.get("/api/listen/{benchmark_id}/audio/{item_id}")
+async def listen_audio(benchmark_id: str, item_id: str) -> Response:
+    bench = _bench(benchmark_id)
+    try:
+        bench.item(item_id)
+    except KeyError:
+        raise HTTPException(404, "no such item") from None
+    path = bench.audio_path(item_id)
+    if not path.exists():
+        raise HTTPException(404, "audio missing for this item")
+    return Response(
+        content=path.read_bytes(),
+        media_type="audio/wav",
+        # No filename: a Content-Disposition carrying the system name would undo
+        # the blinding that naming the file by item id exists to provide.
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.post("/api/listen/{benchmark_id}/rate")
+async def listen_rate(
+    benchmark_id: str,
+    listener: str = Form(...),
+    item_id: str = Form(...),
+    ms: int = Form(...),
+    score: int | None = Form(None),
+    called_real: bool | None = Form(None),
+) -> dict:
+    bench = _bench(benchmark_id)
+    answer: dict = {"ms": ms}
+    if score is not None:
+        if not 1 <= score <= 5:
+            raise HTTPException(400, "score must be 1-5")
+        answer["score"] = score
+    if called_real is not None:
+        answer["called_real"] = called_real
+    if len(answer) == 1:
+        raise HTTPException(400, "a rating needs either a score or a real/synthetic answer")
+    try:
+        total = bench.record(listener, item_id, answer)
+    except KeyError:
+        raise HTTPException(404, "no such item") from None
+    return {"recorded": item_id, "given": total}
+
+
+@app.get("/api/listen/{benchmark_id}/results")
+async def listen_results(benchmark_id: str, include_rushed: bool = False) -> dict:
+    """Scores per system. Not linked from the listening page on purpose -- a listener
+    who sees the running tally is no longer blind."""
+    from voiceagent.eval.abtest import IDENTITY, NATURALNESS
+
+    bench = _bench(benchmark_id)
+    return {
+        "benchmark_id": bench.benchmark_id,
+        "created_at": bench.created_at,
+        IDENTITY: bench.results(IDENTITY, include_rushed),
+        NATURALNESS: bench.results(NATURALNESS, include_rushed),
+    }
+
+
 def main() -> int:
     import uvicorn
 

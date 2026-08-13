@@ -1,0 +1,233 @@
+<title>सुनकर बताइए · Listening test</title>
+<style>
+  :root {
+    --paper:#F2F1EE; --card:#FFFFFF; --ink:#17161A; --soft:#4A4851; --muted:#7C7A83;
+    --line:#D9D7D2; --accent:#1F5138; --accent-soft:#E2EDE6; --warn:#8A5A00;
+    --shadow:0 1px 2px rgba(0,0,0,.05), 0 14px 34px -22px rgba(0,0,0,.3);
+    --body:"Noto Sans Devanagari", Optima, "Gill Sans MT", system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:#111013; --card:#1B1A1F; --ink:#EBE9E5; --soft:#B9B6B1; --muted:#85828A;
+      --line:#302D35; --accent:#5FB086; --accent-soft:#17281F; --warn:#D8A54A;
+      --shadow:0 1px 2px rgba(0,0,0,.5), 0 14px 34px -22px rgba(0,0,0,.85);
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper:#111013; --card:#1B1A1F; --ink:#EBE9E5; --soft:#B9B6B1; --muted:#85828A;
+    --line:#302D35; --accent:#5FB086; --accent-soft:#17281F; --warn:#D8A54A;
+    --shadow:0 1px 2px rgba(0,0,0,.5), 0 14px 34px -22px rgba(0,0,0,.85);
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--paper); color:var(--ink); font-family:var(--body);
+    font-size:17px; line-height:1.6; -webkit-font-smoothing:antialiased;
+    display:flex; align-items:flex-start; justify-content:center; min-height:100vh; }
+  main { width:100%; max-width:620px; padding:40px 24px 80px; }
+  h1 { font-size:1.6rem; margin:0 0 6px; font-weight:600; }
+  .sub { color:var(--muted); font-size:.94rem; margin:0 0 26px; }
+  .card { background:var(--card); border:1px solid var(--line); box-shadow:var(--shadow);
+    border-radius:6px; padding:28px; }
+  label { display:block; font-size:.82rem; letter-spacing:.06em; text-transform:uppercase;
+    color:var(--muted); margin-bottom:7px; }
+  input[type=text] { width:100%; padding:12px 14px; font:inherit; font-size:1rem;
+    border:1px solid var(--line); border-radius:5px; background:var(--paper); color:var(--ink); }
+  button { font:inherit; font-size:1rem; padding:13px 20px; border-radius:5px;
+    border:1px solid var(--line); background:var(--paper); color:var(--ink); cursor:pointer; }
+  button:hover:not(:disabled) { border-color:var(--accent); }
+  button:disabled { opacity:.45; cursor:default; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+  :root[data-theme="dark"] button.primary, .darkfix { color:#0E1611; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) button.primary { color:#0E1611; } }
+  .row { display:flex; gap:12px; flex-wrap:wrap; margin-top:18px; }
+  .choices { display:grid; gap:12px; margin-top:22px; }
+  .choices.two { grid-template-columns:1fr 1fr; }
+  .choices.five { grid-template-columns:repeat(5,1fr); }
+  .choices button { padding:18px 8px; display:flex; flex-direction:column;
+    align-items:center; gap:5px; line-height:1.25; }
+  .choices .big { font-size:1.5rem; font-weight:600; }
+  .choices .cap { font-size:.74rem; color:var(--muted); text-align:center; }
+  .play { width:100%; padding:22px; font-size:1.1rem; font-weight:600;
+    background:var(--accent-soft); border-color:var(--accent); color:var(--accent); }
+  .meterwrap { margin:22px 0 4px; }
+  .meter { height:6px; background:var(--line); border-radius:3px; overflow:hidden; }
+  .meter i { display:block; height:100%; background:var(--accent); width:0%; transition:width .25s; }
+  .count { font-size:.82rem; color:var(--muted); margin-top:8px;
+    font-variant-numeric:tabular-nums; }
+  .note { font-size:.88rem; color:var(--muted); margin-top:20px; }
+  .note.warn { color:var(--warn); }
+  .hidden { display:none; }
+  .big-thanks { font-size:2.6rem; margin:0 0 10px; }
+  ol.brief { padding-left:1.3em; color:var(--soft); font-size:.94rem;
+    display:flex; flex-direction:column; gap:9px; margin:0 0 4px; }
+</style>
+
+<main>
+  <h1>सुनकर बताइए</h1>
+  <p class="sub">A short listening test. No login, nothing recorded from your microphone.</p>
+
+  <!-- start -->
+  <div class="card" id="start">
+    <label for="name">Your name or a nickname</label>
+    <input type="text" id="name" placeholder="e.g. Ravi" autocomplete="off">
+    <p class="note">Only used to keep your answers together so a reload does not start you over.</p>
+
+    <div id="pick" style="margin-top:24px">
+      <label>Which test</label>
+      <ol class="brief">
+        <li><b>Real or synthetic</b> — you hear one clip and say whether a person actually said it, or a computer produced it.</li>
+        <li><b>How natural</b> — you rate how natural the Hindi sounds, 1 to 5.</li>
+      </ol>
+      <div class="row">
+        <button class="primary" id="goIdentity">Real or synthetic</button>
+        <button id="goNatural">How natural</button>
+      </div>
+    </div>
+    <div class="note warn hidden" id="startErr"></div>
+  </div>
+
+  <!-- test -->
+  <div class="card hidden" id="test">
+    <p class="sub" id="prompt" style="margin:0 0 4px"></p>
+    <button class="play" id="play">▶︎ Play</button>
+
+    <div class="choices two hidden" id="identityChoices">
+      <button data-real="1"><span class="big">🗣️</span><span>A real person</span><span class="cap">someone actually said this</span></button>
+      <button data-real="0"><span class="big">🤖</span><span>Synthetic</span><span class="cap">a computer produced it</span></button>
+    </div>
+
+    <div class="choices five hidden" id="naturalChoices">
+      <button data-score="1"><span class="big">1</span><span class="cap">bad</span></button>
+      <button data-score="2"><span class="big">2</span><span class="cap">poor</span></button>
+      <button data-score="3"><span class="big">3</span><span class="cap">fair</span></button>
+      <button data-score="4"><span class="big">4</span><span class="cap">good</span></button>
+      <button data-score="5"><span class="big">5</span><span class="cap">natural</span></button>
+    </div>
+
+    <div class="meterwrap"><div class="meter"><i id="bar"></i></div>
+      <div class="count" id="count"></div></div>
+    <p class="note" id="hint">Play it once, then answer. Trust your first reaction.</p>
+  </div>
+
+  <!-- done -->
+  <div class="card hidden" id="done">
+    <p class="big-thanks">🙏</p>
+    <h1 style="font-size:1.35rem">धन्यवाद — that is all of them.</h1>
+    <p class="sub" style="margin-top:8px">Your answers are saved. You can close this tab.</p>
+    <div class="row"><button id="again">Do the other test</button></div>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const BENCH = new URLSearchParams(location.search).get("b") || "latest";
+
+let listener = "", kind = "", queue = [], at = 0, audio = null, playedAt = 0, played = false;
+
+function show(which) {
+  for (const id of ["start", "test", "done"]) $(id).classList.toggle("hidden", id !== which);
+}
+
+async function begin(which) {
+  listener = $("name").value.trim();
+  if (!listener) { $("startErr").textContent = "Please put a name in first."; $("startErr").classList.remove("hidden"); return; }
+  kind = which;
+  localStorage.setItem("listenName", listener);
+
+  const r = await fetch(`/api/listen/${BENCH}/session?listener=${encodeURIComponent(listener)}&kind=${kind}`);
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    $("startErr").textContent = d.detail || "Could not load the test.";
+    $("startErr").classList.remove("hidden");
+    return;
+  }
+  const s = await r.json();
+  const done = new Set(s.done);
+  // Resume where they left off rather than re-asking. Re-presenting an item they
+  // already rated would weight that listener's opinion twice.
+  queue = s.items.filter(i => !done.has(i));
+  if (!queue.length) return show("done");
+
+  $("identityChoices").classList.toggle("hidden", kind !== "identity");
+  $("naturalChoices").classList.toggle("hidden", kind !== "naturalness");
+  $("prompt").textContent = kind === "identity"
+    ? "Did a real person say this, or did a computer make it?"
+    : "How natural does this Hindi sound?";
+  at = 0;
+  show("test");
+  load();
+}
+
+function load() {
+  played = false;
+  setChoicesEnabled(false);
+  $("hint").textContent = "Play it once, then answer. Trust your first reaction.";
+  $("play").textContent = "▶︎ Play";
+  const total = queue.length;
+  $("bar").style.width = `${(at / total) * 100}%`;
+  $("count").textContent = `${at} of ${total} answered`;
+
+  if (audio) { audio.pause(); audio = null; }
+  audio = new Audio(`/api/listen/${BENCH}/audio/${queue[at]}`);
+  audio.onended = () => { $("play").textContent = "↻ Play again"; };
+}
+
+function setChoicesEnabled(on) {
+  document.querySelectorAll("#identityChoices button, #naturalChoices button")
+    .forEach(b => b.disabled = !on);
+}
+
+$("play").onclick = () => {
+  if (!audio) return;
+  audio.currentTime = 0;
+  audio.play();
+  if (!played) { played = true; playedAt = Date.now(); setChoicesEnabled(true); }
+  $("play").textContent = "■ Playing…";
+};
+
+async function answer(body) {
+  const form = new FormData();
+  form.append("listener", listener);
+  form.append("item_id", queue[at]);
+  // Time from first play to answer. The harness drops anything under 1.2s as a
+  // click-through, so this has to be measured rather than guessed.
+  form.append("ms", String(Date.now() - playedAt));
+  for (const [k, v] of Object.entries(body)) form.append(k, String(v));
+
+  setChoicesEnabled(false);
+  const r = await fetch(`/api/listen/${BENCH}/rate`, { method: "POST", body: form });
+  if (!r.ok) { $("hint").textContent = "Could not save that — try again."; setChoicesEnabled(true); return; }
+
+  if (audio) audio.pause();
+  at++;
+  if (at >= queue.length) {
+    $("bar").style.width = "100%";
+    return show("done");
+  }
+  load();
+}
+
+document.querySelectorAll("#identityChoices button").forEach(b => {
+  b.onclick = () => answer({ called_real: b.dataset.real === "1" });
+});
+document.querySelectorAll("#naturalChoices button").forEach(b => {
+  b.onclick = () => answer({ score: b.dataset.score });
+});
+
+$("goIdentity").onclick = () => begin("identity");
+$("goNatural").onclick = () => begin("naturalness");
+$("again").onclick = () => { kind = kind === "identity" ? "naturalness" : "identity"; begin(kind); };
+
+const saved = localStorage.getItem("listenName");
+if (saved) $("name").value = saved;
+
+// Keyboard: 1-5 for naturalness, R and S for the identity test. Faster for anyone
+// scoring a hundred clips, and the harness is only useful if scoring is cheap.
+document.addEventListener("keydown", e => {
+  if ($("test").classList.contains("hidden")) return;
+  if (e.key === " ") { e.preventDefault(); $("play").click(); return; }
+  if (!played) return;
+  if (kind === "naturalness" && /^[1-5]$/.test(e.key)) answer({ score: e.key });
+  if (kind === "identity" && /^[rR]$/.test(e.key)) answer({ called_real: true });
+  if (kind === "identity" && /^[sS]$/.test(e.key)) answer({ called_real: false });
+});
+</script>
