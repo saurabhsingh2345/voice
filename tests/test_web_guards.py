@@ -244,3 +244,43 @@ def test_swap_percentage_is_not_used_as_a_guard():
     `memory_pressure` reported 74% free. Guarding on it refused work that would
     have succeeded."""
     assert not hasattr(srv, "MAX_SWAP_FRACTION")
+
+
+# --- fine-tuned weights are selected per voice ----------------------------
+
+
+def test_a_voice_with_no_finetune_gets_stock_weights(tmp_path, monkeypatch):
+    monkeypatch.setattr(srv.dataset, "root", tmp_path / "voices")
+    assert srv.indic_checkpoint_for("never-trained") is None
+
+
+def test_a_voice_with_a_finetune_gets_its_own_weights(tmp_path, monkeypatch):
+    """Looked up by profile id rather than configured globally: enrol two voices,
+    train one, and the trained one should use its own weights without anybody
+    selecting anything."""
+    monkeypatch.setattr(srv.dataset, "root", tmp_path / "voices")
+    ckpt = tmp_path / "f5tts_ckpts" / "trained" / "model_last.pt"
+    ckpt.parent.mkdir(parents=True)
+    ckpt.write_bytes(b"weights")
+    assert srv.indic_checkpoint_for("trained") == ckpt
+
+
+def test_model_last_is_preferred_over_numbered_checkpoints(tmp_path, monkeypatch):
+    """The trainer writes model_last.pt every `last_per_updates`, so it is the most
+    recent state; a numbered checkpoint can be hundreds of updates behind."""
+    monkeypatch.setattr(srv.dataset, "root", tmp_path / "voices")
+    d = tmp_path / "f5tts_ckpts" / "trained"
+    d.mkdir(parents=True)
+    (d / "model_200.pt").write_bytes(b"old")
+    (d / "model_last.pt").write_bytes(b"new")
+    assert srv.indic_checkpoint_for("trained").name == "model_last.pt"
+
+
+def test_the_response_says_which_weights_answered():
+    """Without this there is no way to tell a fine-tuned generation from a stock one
+    by listening, and the whole point of training is that they differ."""
+    import inspect
+
+    source = inspect.getsource(srv.speak)
+    assert '"X-Weights"' in source
+    assert "fine-tuned" in source and "stock" in source

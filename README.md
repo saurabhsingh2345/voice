@@ -667,6 +667,90 @@ length sets peak allocation for one f5-tts call, so this is a memory decision as
 much as a prosodic one — the service sizes its memory guard on the longest
 sentence for exactly that reason.
 
+## Phase 10 — fine-tuning the voice
+
+Zero-shot cloning has a ceiling: it transfers timbre from a 12-second prompt and
+nothing else, so it cannot learn how a particular person lands on the end of a
+sentence. Getting past that means fine-tuning IndicF5 on a dataset of one voice.
+
+```bash
+uv run voice-web                       # section 4: record clips, correct text
+uv run voice-train-prep <profile_id>   # prints the two commands to run
+```
+
+Result on 96 clips / 9.72 min: **8 epochs, 648 updates, 13.5 min wall** at
+batch_size_per_gpu=800, ~1.2 s/update, peak availability drop ~4.7 GiB.
+Round-trip stayed at **81 % INTELLIGIBLE**, so nothing was traded for it. Judged
+by the speaker: indistinguishable from his own voice, including on long narration.
+
+### Four things stop the stock trainer, none of which announce themselves
+
+1. **Architecture flags.** `F5TTS_v1_Base.yaml` sets `text_mask_padding: True` and
+   `pe_attn_head: null`; IndicF5 needs `False` and `1`. Every tensor still loads, so
+   it does not error — it spends hours unlearning the pretrained weights.
+2. **Checkpoint key layout.** IndicF5 carries 447 keys as
+   `ema_model._orig_mod.*`; the trainer strictly loads 366 as `ema_model.*`.
+3. **Tokenizer and base vocab.** Needs `--tokenizer custom` against IndicF5's
+   2545-entry vocab, and `prepare_csv_wavs` asserts on a base vocab at a path named
+   `Emilia_ZH_EN_pinyin` — the name is just where it is hardcoded.
+4. **Both the checkpoint and dataset directories resolve inside `.venv`**, so
+   `uv sync` can delete a finished fine-tune.
+
+`voice-train-prep` handles all four and refuses if the trainer would look for the
+checkpoint somewhere the prepared one is not.
+
+### The loss curve is not diagnostic. The starting value is.
+
+A full 22-epoch run reached loss 1.73 and looked healthy. It was not a fine-tune:
+`Trainer.load_checkpoint` had found nothing to load and trained from **random
+weights**, silently. Falling loss looks identical either way.
+
+| | initial loss |
+| --- | --- |
+| random weights | 8.24 |
+| IndicF5 loaded | **0.908** |
+
+Nine times lower, because the loaded model already speaks Hindi. That check now
+runs at preparation time, because this class of failure is only cheap to catch
+before the run.
+
+### F0 and spectral centroid did not predict identity
+
+Measured against 15 real clips (F0 134.3 Hz), the fine-tune came out *further* from
+the speaker on pitch with the short reference (18.6 Hz vs 17.8) and the numbers
+preferred a different reference clip entirely. The speaker's own judgement was the
+opposite: the file the metrics ranked worst was the one that sounded like him.
+
+So these proxies rank candidates at best. They do not settle identity, and a
+measurement that contradicts the person whose voice it is loses.
+
+### What made the dataset usable
+
+Three defects, all found by auditing 86 real clips before spending compute:
+
+- **29 % of the dataset was invisible.** 15 clips exceeded the 8.5 s a batch of 800
+  frames holds (93.8 frames/sec), so the trainer skipped them. Re-split: total fell
+  0.5 min while *usable* audio rose from ~7.2 to 9.7.
+- **Transcription error was training the wrong mapping.** Whisper wrote क्रिपया for
+  कृपया and इस पर्ष्ट for स्पष्ट — six of eight prompt-read clips wrong. Fixed at the
+  root: when the speaker reads a displayed prompt, the prompt *is* the transcript.
+  Asking a 4.8 %-CER model to guess text we already have can only add error.
+- **Training text did not match inference text.** `/api/speak` runs
+  `normalize_hi()` first, so the model never sees a digit at inference. Export now
+  normalizes too.
+
+### Using it
+
+A fine-tune is looked up by profile id, so a trained voice uses its own weights
+with nothing to configure. `/api/speak` reports which answered:
+
+```
+x-weights: fine-tuned      # or: stock
+```
+
+Switching between a fine-tuned and a stock voice costs a ~15 s reload — one Indic
+model fits in memory, two do not.
+
 ## Layout
 
 | Path | Role |
@@ -680,6 +764,7 @@ sentence for exactly that reason.
 | `voice_clone/` | Consent-gated voice cloning (Phase 7) |
 | `text/` | Script detection, Hindi normalization, Latin→Devanagari (Phase 9) |
 | `eval/` | Hindi round-trip, register and diagnostic harnesses (Phase 9) |
+| `train/` | Fine-tune preparation and reading prompts (Phase 10) |
 | `diagnostics/` | Environment and budget checks (Phase 0) |
 | `models.py` | Model registry, licenses, memory budget |
 
@@ -695,7 +780,9 @@ sentence for exactly that reason.
 - [x] **Phase 7** — voice cloning, consent-gated (Chatterbox Turbo) *(brought forward)*
 - [x] **Web UI** — enrol a voice, type text, hear it *(Tauri shell still pending)*
 - [x] **Phase 8** — Tauri `.app` bundle (launcher, not yet self-contained)
-- [x] **Phase 9** — Hindi: intelligible TTS (22/22), ASR at 4.8 % CER, no fine-tune needed
+- [x] **Phase 9** — Hindi: intelligible TTS (22/22), ASR at 4.8 % CER, no *LLM* fine-tune needed
+- [x] **Phase 10** — voice fine-tuning: dataset builder, IndicF5 fine-tune, judged
+      indistinguishable by the speaker
 
 Known gaps, stated rather than buried:
 
@@ -708,7 +795,8 @@ Known gaps, stated rather than buried:
 - Hindi is **type-and-listen only** (RTF 3.40); the live loop stays English.
 - No acoustic echo cancellation — use headphones (Phase 4).
 - The desktop app is a launcher and still needs the checkout and its `.venv`.
-- Hindi *quality* beyond intelligibility is unverified by a native speaker.
+- Hindi *quality* beyond intelligibility has no automated measure. F0 and spectral
+  centroid were tried and contradicted the speaker's own ear, so they are not it.
 
 ## Rejected models
 

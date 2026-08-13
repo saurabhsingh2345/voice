@@ -147,9 +147,31 @@ async def _ensure_loaded() -> None:
 #: the memory guard in /api/speak, which would otherwise measure the wrong host.
 _indic_is_remote = False
 
+#: Which checkpoint the resident Indic engine was loaded from, so a request for a
+#: differently-trained voice can be detected rather than silently answered wrong.
+_indic_checkpoint: "Path | None" = None
 
-async def _ensure_indic() -> "object":
+
+def indic_checkpoint_for(profile_id: str) -> "Path | None":
+    """The fine-tuned weights for this voice, if it has any.
+
+    A fine-tune belongs to the voice it was trained on, so it is looked up by
+    profile id rather than configured globally: enrol two voices, train one, and the
+    trained one should use its own weights without anybody selecting anything.
+    `model_last.pt` rather than the numbered checkpoints -- the trainer writes it
+    every `last_per_updates`, so it is the most recent state.
+    """
+    candidate = Path(dataset.root).parent / "f5tts_ckpts" / profile_id / "model_last.pt"
+    return candidate if candidate.exists() else None
+
+
+async def _ensure_indic(profile_id: str | None = None) -> "object":
     """Get the Indic engine, local or remote.
+
+    Reloads when the requested voice needs different weights from the ones already
+    resident. That is the same eviction trade as everywhere else here -- one engine
+    fits, two do not -- and it costs a ~15 s load when alternating between a
+    fine-tuned voice and a stock one.
 
     With VOICEAGENT_TTS_URL set, synthesis happens on another machine and this
     one keeps Chatterbox resident -- the eviction below exists only because both
@@ -157,11 +179,19 @@ async def _ensure_indic() -> "object":
     is somewhere else. Removing it also removes Chatterbox's 30 s reload on the
     next English request, which is the eviction's real cost.
     """
-    global _indic_engine, _loaded, _indic_is_remote
+    global _indic_engine, _loaded, _indic_is_remote, _indic_checkpoint
     from voiceagent.tts.indic_engine import IndicTTSEngine
     from voiceagent.tts.remote_engine import from_env
 
+    wanted = indic_checkpoint_for(profile_id) if profile_id else None
+
     async with _indic_lock:
+        # Wrong weights resident: unload before loading the right ones, rather than
+        # answering in a voice the caller did not ask for.
+        if _indic_engine is not None and not _indic_is_remote and wanted != _indic_checkpoint:
+            await asyncio.to_thread(_indic_engine.unload)
+            _indic_engine = None
+
         if _indic_engine is None:
             remote = from_env()
             if remote is not None:
@@ -175,8 +205,9 @@ async def _ensure_indic() -> "object":
                 if _loaded:
                     engine.unload()
                     _loaded = False
-                _indic_engine = IndicTTSEngine()
+                _indic_engine = IndicTTSEngine(checkpoint=wanted)
                 await asyncio.to_thread(_indic_engine.load)
+                _indic_checkpoint = wanted
     return _indic_engine
 
 
@@ -578,7 +609,7 @@ async def speak(
                             "and restart the server.",
                         )
 
-                indic = await _ensure_indic()
+                indic = await _ensure_indic(profile_id)
                 import io as _io
                 import soundfile as _sf
 
@@ -637,6 +668,7 @@ async def speak(
             "X-Realtime-Factor": f"{(elapsed_ms / 1000) / seconds:.2f}" if seconds else "0",
             "X-Audio-Format": ext,
             "X-Language": detection.language,
+            "X-Weights": ("fine-tuned" if _indic_checkpoint else "stock"),
             "X-Engine": (
                 ("indicf5-remote" if _indic_is_remote else "indicf5")
                 if detection.is_indic
