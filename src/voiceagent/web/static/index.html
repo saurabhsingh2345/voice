@@ -451,9 +451,13 @@ async function refreshVoices() {
   $("speak").disabled = false;
   $("speakHint").textContent = "";
 
-  // Keep whichever voice was being trained selected across a refresh, so saving
-  // a clip does not silently move the next one onto a different speaker.
-  if (dsPrev && [...dsSel.options].some(o => o.value === dsPrev)) dsSel.value = dsPrev;
+  // Keep whichever voice was being trained selected -- across a refresh of this
+  // list AND across a browser reload. Without the stored half, reloading reset the
+  // selector to the first voice, which showed an empty dataset for a speaker with
+  // no clips and read exactly like the recordings had been erased.
+  const want = dsPrev || localStorage.getItem("dsVoice");
+  if (want && [...dsSel.options].some(o => o.value === want)) dsSel.value = want;
+  localStorage.setItem("dsVoice", dsSel.value);
   dsRefresh();
 }
 
@@ -761,7 +765,10 @@ $("dsWipe").onclick = async () => {
   dsRefresh();
 };
 
-$("dsVoice").onchange = dsRefresh;
+$("dsVoice").onchange = () => {
+  localStorage.setItem("dsVoice", dsVoiceId());
+  dsRefresh();
+};
 dsLoadPrompts();
 // --- long takes -----------------------------------------------------------
 // One Whisper pass over a whole take gives boundaries and aligned text together.
