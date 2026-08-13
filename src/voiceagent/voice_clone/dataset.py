@@ -112,6 +112,20 @@ def plan_segments(
         text = (word.get("word") or "").strip()
         if not text:
             continue
+
+        # Close the span BEFORE the word that would push it over the cap, not after.
+        # Cutting after meant a span could overshoot by one word's duration -- with
+        # an 8.0s cap that produced clips of 8.52s to 9.16s, every one of which is
+        # over the 8.5s a batch of 800 frames can hold, so they were skipped for
+        # exactly the reason the cap exists.
+        if buffer and (word["end"] - start) > max_seconds:
+            previous_end = words[index - 1]["end"]
+            joined = " ".join(buffer).strip()
+            if previous_end - start >= min_seconds and joined:
+                spans.append((start, previous_end, joined))
+                buffer = []
+                start = word["start"]
+
         buffer.append(text)
         span = word["end"] - start
         last = index == len(words) - 1
@@ -375,6 +389,8 @@ class VoiceDataset:
 
         import soundfile as sf
 
+        from voiceagent.text.normalize_hi import normalize as normalize_hi
+
         clips = self.clips(profile_id, language=language)
         if not clips:
             raise DatasetError(f"No clips to export for {profile_id!r}.")
@@ -390,7 +406,17 @@ class VoiceDataset:
                 samples = samples.mean(axis=1)
             path = wavs / f"{clip.clip_id}.wav"
             sf.write(path, samples, rate, format="WAV", subtype="PCM_16")
-            rows.append((str(path.resolve()), clip.text))
+
+            # Normalize exactly as the synthesis path does. `/api/speak` runs
+            # normalize_hi() before handing text to the model, so at inference the
+            # model never sees a digit -- "1299" arrives as
+            # "एक हज़ार दो सौ निन्यानवे". Training on the digits would teach a mapping
+            # that is never exercised, and leave the word forms untrained in context.
+            # Applied here rather than at save time so the stored transcript stays
+            # the human-verified text, and the export follows normalize_hi if it
+            # changes.
+            text = normalize_hi(clip.text) if clip.language == "hi" else clip.text
+            rows.append((str(path.resolve()), " ".join(text.split())))
             total += clip.duration_seconds
 
         metadata = dest / "metadata.csv"

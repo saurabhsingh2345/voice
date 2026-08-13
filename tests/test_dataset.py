@@ -378,3 +378,15 @@ def test_consent_records_are_not_rewritten_by_a_merge(dataset, store, profile, s
 
     assert store.get(profile.profile_id).consent.speaker_name == "Atul"
     assert store.get(second_profile.profile_id).consent.speaker_name == "Saurabh"
+
+
+def test_no_span_overshoots_the_cap_by_a_word():
+    """Cutting after the word that crossed the cap instead of before it produced
+    clips of 8.52-9.16s against an 8.0s cap -- every one over the 8.5s a batch of 800
+    frames holds, so they were skipped for exactly the reason the cap exists."""
+    from voiceagent.voice_clone.dataset import MAX_SEGMENT_SECONDS, plan_segments
+
+    # Long words, no punctuation, no pauses: nothing but the cap can cut this.
+    run = words(*[(f"शब्द{i}", i * 1.3, i * 1.3 + 1.3) for i in range(40)])
+    for begin, finish, _ in plan_segments(run):
+        assert finish - begin <= MAX_SEGMENT_SECONDS, f"span of {finish - begin:.2f}s exceeds the cap"
