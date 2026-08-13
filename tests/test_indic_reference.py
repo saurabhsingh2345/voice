@@ -100,3 +100,103 @@ def test_never_trims_to_nothing():
     engine = IndicTTSEngine()
     engine.set_reference(clip(300.0), "नमस्ते", SR)
     assert engine.reference_text.strip()
+
+
+# --- narration: grouping and joins ----------------------------------------
+
+
+def test_sentences_are_grouped_into_one_f5_batch():
+    """One f5-tts call per sentence was wrong twice over: four raw joins in a
+    five-sentence passage, and the reference conditioning plus a full diffusion run
+    paid per call. Measured 45 s per-sentence against 17 s grouped for the same
+    10.2 s of audio and the same 64% round-trip score."""
+    from voiceagent.tts.indic_engine import group_sentences
+
+    sentences = ["नमस्ते।", "आज मौसम सुहावना है।", "आसमान साफ़ है।", "मैं यहाँ हूँ।"]
+    assert len(group_sentences(sentences, 465)) == 1
+
+
+def test_grouping_respects_the_byte_budget():
+    from voiceagent.tts.indic_engine import group_sentences
+
+    sentences = ["आज मौसम बहुत सुहावना है।"] * 10
+    spans = group_sentences(sentences, 100)
+    assert len(spans) > 1
+    # A span may exceed the budget only when a single sentence does.
+    for span in spans:
+        assert len(span.encode()) <= 100 or " " not in span.strip()
+
+
+def test_an_oversized_sentence_is_not_split():
+    """f5-tts batches it internally and cross-fades itself, which beats any cut we
+    could make without knowing where the words are."""
+    from voiceagent.tts.indic_engine import group_sentences
+
+    long_one = "क " * 300 + "।"
+    assert group_sentences([long_one], 100) == [long_one]
+
+
+def test_the_budget_is_derived_from_the_reference_speaking_rate():
+    from voiceagent.tts.indic_engine import batch_budget_bytes
+
+    slow = batch_budget_bytes("नमस्ते।" * 5, 10.0)
+    fast = batch_budget_bytes("नमस्ते।" * 20, 10.0)
+    assert fast > slow, "a faster reference should allow more text per batch"
+
+
+def test_crossfade_gains_sum_to_one():
+    """Linear, matching f5-tts's own internal joins. Equal-power ramps sum to 1.414
+    on correlated spans, and this model's output already peaks at 1.000 -- so the
+    textbook choice would clip rather than smooth."""
+    import numpy as np
+
+    from voiceagent.tts.indic_engine import concat_with_crossfade
+
+    ones = np.ones(24_000, dtype=np.float32)
+    joined = concat_with_crossfade([ones, ones], 24_000)
+    assert joined.max() <= 1.0 + 1e-6, "cross-fade must not push correlated spans over full scale"
+
+
+def test_crossfade_shortens_by_the_overlap():
+    import numpy as np
+
+    from voiceagent.tts.indic_engine import CROSS_FADE_SECONDS, concat_with_crossfade
+
+    a = np.ones(24_000, dtype=np.float32)
+    joined = concat_with_crossfade([a, a], 24_000)
+    assert len(joined) == 2 * 24_000 - int(CROSS_FADE_SECONDS * 24_000)
+
+
+def test_crossfade_handles_a_single_span_and_none():
+    import numpy as np
+
+    from voiceagent.tts.indic_engine import concat_with_crossfade
+
+    a = np.ones(10, dtype=np.float32)
+    assert len(concat_with_crossfade([a], 24_000)) == 10
+    assert len(concat_with_crossfade([], 24_000)) == 0
+
+
+def test_overshoot_is_scaled_down_not_clipped():
+    """IndicF5 returned a peak of 1.335 on a 10-sentence narration, and PCM_16
+    hard-clips anything over 1.0 (0.04% of samples measured). Scale, don't clamp."""
+    import numpy as np
+
+    from voiceagent.tts.indic_engine import concat_with_crossfade
+
+    hot = (np.linspace(-1.335, 1.335, 24_000)).astype(np.float32)
+    out = concat_with_crossfade([hot], 24_000)
+    assert np.abs(out).max() <= 0.99 + 1e-6
+    # shape preserved -- scaled, not squashed
+    assert abs(float(out[0] / out[-1]) + 1.0) < 1e-3
+
+
+def test_quiet_audio_is_not_normalised_up():
+    """Otherwise level would depend on whatever the loudest moment happened to be,
+    and the same text would come back at different volumes run to run."""
+    import numpy as np
+
+    from voiceagent.tts.indic_engine import concat_with_crossfade
+
+    quiet = (np.ones(1000, dtype=np.float32) * 0.05)
+    assert float(np.abs(concat_with_crossfade([quiet], 24_000)).max()) == pytest.approx(0.05)

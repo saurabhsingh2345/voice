@@ -26,6 +26,7 @@ from voiceagent.text.detect import detect
 from voiceagent.text.normalize_hi import normalize as normalize_hi
 from voiceagent.tts.indic_engine import (
     CHARS_PER_BATCH,
+    concat_with_crossfade,
     GIB_PER_EXTRA_BATCH,
     MIN_FREE_GIB,
     required_free_gib,
@@ -595,7 +596,11 @@ async def speak(
     if not parts:
         raise HTTPException(500, "no audio was produced")
 
-    audio = np.concatenate(parts)
+    # Cross-fade rather than butt-join. Each part is an independent generation,
+    # so a raw concatenate leaves an audible seam at every boundary -- which is
+    # what f5-tts avoids internally with its own 0.15 s cross-fade, and what we
+    # bypassed by splitting the text ourselves.
+    audio = concat_with_crossfade(parts, SAMPLE_RATE)
     elapsed_ms = (time.perf_counter() - started) * 1000
     seconds = len(audio) / SAMPLE_RATE
 

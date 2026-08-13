@@ -119,9 +119,11 @@ GIB_PER_EXTRA_BATCH = 0.5
 def required_free_gib(text: str) -> float:
     """Headroom needed for the largest single f5-tts call `text` will produce.
 
-    Sized on the longest *sentence*, not the whole request, because
-    `synthesize()` makes one f5-tts call per sentence -- the mitigation for the
-    SIGSEGV in PyTorch's Metal shader library. Scaling on the total measures an
+    Sized on the longest *sentence*, not the whole request. `synthesize()` groups
+    sentences up to one f5-tts batch, so a span never exceeds one batch -- except
+    when a single sentence is longer than the budget, in which case the span *is*
+    that sentence. The longest sentence is therefore exactly the right input, and
+    stays so after grouping. Scaling on the total measures an
     allocation no single call makes: it demanded 17 GiB for a 3000-character
     narration and 4.0 GiB for an ordinary 350-character paragraph of short
     sentences, refusing on an 18 GiB machine work that needs 2.5 GiB.
@@ -138,6 +140,123 @@ def required_free_gib(text: str) -> float:
     longest = max((len(s) for s in sentences), default=len(text))
     batches = max(1, -(-longest // CHARS_PER_BATCH))
     return MIN_FREE_GIB + GIB_PER_EXTRA_BATCH * (batches - 1)
+
+
+#: Seconds of overlap when joining two separately-generated spans.
+#:
+#: f5-tts cross-fades its own internal batches by this much (its
+#: `cross_fade_duration` default). Splitting text ourselves and concatenating the
+#: results with `np.concatenate` bypassed that entirely, butt-joining independent
+#: generations -- audible as a seam at every boundary. Matching the value keeps
+#: our joins indistinguishable from theirs.
+CROSS_FADE_SECONDS = 0.15
+
+
+def batch_budget_bytes(ref_text: str, ref_seconds: float, speed: float = 1.0) -> int:
+    """How much text f5-tts will put in one internal batch for this reference.
+
+    Mirrors the formula in `utils_infer.infer_process`, which sizes a batch from
+    the reference's speaking rate:
+
+        max_chars = ref_bytes / ref_seconds * (22 - ref_seconds) * speed
+
+    Note *bytes*, not characters. Devanagari is 3 bytes per character in UTF-8, so
+    a byte budget is roughly a third as many characters as it looks.
+    """
+    if ref_seconds <= 0 or not ref_text:
+        return 300
+    rate = len(ref_text.encode("utf-8")) / ref_seconds
+    return max(64, int(rate * max(1.0, 22.0 - ref_seconds) * speed))
+
+
+def group_sentences(sentences: list[str], budget_bytes: int) -> list[str]:
+    """Pack whole sentences into spans of at most `budget_bytes`.
+
+    Replaces one-f5-tts-call-per-sentence, which was wrong in two ways that both
+    show up as bad narration:
+
+      * **Seams.** Five sentences meant four raw joins between independent
+        generations. Grouping a whole paragraph into one call removed all of them.
+      * **Cost.** The reference conditioning and a full diffusion run are paid per
+        call. Measured on a five-sentence passage: 45 s per-sentence against 17 s
+        grouped, for the same 10.2 s of audio and the same 64 % round-trip score.
+        2.6x, for free.
+
+    A sentence longer than the budget is left whole rather than split, so f5-tts
+    batches it internally and cross-fades it itself -- better than any cut we
+    could make blind.
+
+    Staying at roughly one internal batch per call is also what keeps the SIGSEGV
+    mitigation intact: the crash was five batches in one call, and this is one.
+    """
+    spans: list[str] = []
+    current = ""
+    for sentence in sentences:
+        candidate = f"{current} {sentence}".strip() if current else sentence
+        if current and len(candidate.encode("utf-8")) > budget_bytes:
+            spans.append(current)
+            current = sentence
+        else:
+            current = candidate
+    if current:
+        spans.append(current)
+    return spans
+
+
+def concat_with_crossfade(
+    parts: list[np.ndarray], sample_rate: int, seconds: float = CROSS_FADE_SECONDS
+) -> np.ndarray:
+    """Join spans with a cross-fade instead of a butt join.
+
+    Linear ramps, matching `utils_infer.infer_batch_process` exactly, so a join we
+    make is indistinguishable from a join f5-tts makes internally between its own
+    batches. That consistency is the point: a long narration contains both kinds.
+
+    Equal-power ramps (sqrt of the linear ramp) were tried first and rejected.
+    They hold power constant for uncorrelated signals, which is the textbook
+    choice, but their gains sum to 1.414 where the two spans *are* correlated --
+    and this model's output already peaks at 1.000, so that is clipping rather
+    than a smoother join. Linear gains always sum to 1.
+    """
+    parts = [p for p in parts if p is not None and p.size]
+    if not parts:
+        return np.zeros(0, dtype=np.float32)
+    if len(parts) == 1:
+        return _limit(parts[0])
+
+    n = int(seconds * sample_rate)
+    out = parts[0]
+    for nxt in parts[1:]:
+        overlap = min(n, len(out), len(nxt))
+        if overlap <= 0:
+            out = np.concatenate([out, nxt])
+            continue
+        fade_out = np.linspace(1.0, 0.0, overlap, dtype=np.float32)
+        fade_in = np.linspace(0.0, 1.0, overlap, dtype=np.float32)
+        blended = out[-overlap:] * fade_out + nxt[:overlap] * fade_in
+        out = np.concatenate([out[:-overlap], blended, nxt[overlap:]])
+    return _limit(out.astype(np.float32))
+
+
+def _limit(audio: np.ndarray, ceiling: float = 0.99) -> np.ndarray:
+    """Scale down if the model overshot full scale, otherwise leave it alone.
+
+    IndicF5 returns peaks above 1.0 -- a 10-sentence narration measured 1.335 --
+    and `sf.write(..., subtype="PCM_16")` hard-clips anything over 1.0. Measured
+    0.04 % of samples clipped, so this is a small defect rather than the reason
+    synthesis sounds synthetic; it is fixed because it is free, not because it is
+    the main event.
+
+    Scaling the whole span by one factor rather than clamping per sample keeps the
+    relative levels inside the narration intact. Deliberately not normalising
+    *up*: raising a quiet passage to the ceiling would make level depend on
+    whatever the loudest moment happened to be, so two paragraphs of the same
+    text would come back at different volumes.
+    """
+    peak = float(np.abs(audio).max()) if audio.size else 0.0
+    if peak <= ceiling:
+        return audio
+    return (audio * (ceiling / peak)).astype(np.float32)
 
 
 class IndicTTSAccessError(RuntimeError):
@@ -182,6 +301,8 @@ class IndicTTSEngine(TTSEngine):
         self._output_sample_rate = SAMPLE_RATE
         self._peak_bytes = 0
         self._cancelled = False
+        #: Seed for the span currently being generated; see synthesize().
+        self._span_seed: int | None = None
 
     # --- lifecycle --------------------------------------------------------
 
@@ -390,8 +511,9 @@ class IndicTTSEngine(TTSEngine):
 
         # See DEFAULT_SEED: the sampler reads the global RNG, so this is the only
         # place the seed can be set.
-        if self.seed is not None:
-            torch.manual_seed(self.seed)
+        seed = self._span_seed if self._span_seed is not None else self.seed
+        if seed is not None:
+            torch.manual_seed(seed)
 
         # f5_tts wants a reference *path*, so the (decrypted) clip is written to
         # a temp file that is removed as soon as inference returns -- the
@@ -453,17 +575,28 @@ class IndicTTSEngine(TTSEngine):
         if not sentences:
             return
 
+        # Group whole sentences up to one f5-tts batch rather than calling once
+        # per sentence. See group_sentences: fewer joins and 2.6x less compute for
+        # the same audio, while keeping each call to a single internal batch.
+        spans = group_sentences(sentences, self.batch_budget)
+
         first = True
-        for index, sentence in enumerate(sentences):
+        for index, sentence in enumerate(spans):
             if self._cancelled:
                 return
+            # A different seed per span. With one fixed seed every span starts
+            # from identical noise, which makes a long passage sound like the
+            # same intonation contour repeated. Derived from the base seed so the
+            # whole narration is still reproducible.
+            if self.seed is not None:
+                self._span_seed = self.seed + index
             audio = await asyncio.to_thread(self._generate_blocking, sentence)
             if self._cancelled or not audio.size:
                 continue
             yield AudioChunk(
                 samples=audio,
                 sample_rate=SAMPLE_RATE,
-                is_final=index == len(sentences) - 1,
+                is_final=index == len(spans) - 1,
                 # Latency is time to *first* audio, which is what a listener
                 # waits for; later chunks have already started playing.
                 latency_ms=(time.perf_counter() - started) * 1000 if first else None,
@@ -476,13 +609,22 @@ class IndicTTSEngine(TTSEngine):
         if self._model is None:
             raise RuntimeError("load() must be called before synthesize_stream()")
 
+        # Deliberately NOT grouped, unlike synthesize(). Grouping buys prosody and
+        # 2.6x less compute by waiting for more text, and waiting is the one thing
+        # a live stream cannot do -- the caller is feeding tokens so it can start
+        # speaking at the first sentence boundary. So this path keeps one call per
+        # sentence and accepts the seams. Narration should use synthesize().
         self._cancelled = False
         chunker = SentenceChunker()
         started = time.perf_counter()
         first = True
+        spoken = 0
 
         async def speak(sentence: str):
-            nonlocal first
+            nonlocal first, spoken
+            if self.seed is not None:
+                self._span_seed = self.seed + spoken
+            spoken += 1
             audio = await asyncio.to_thread(self._generate_blocking, sentence)
             if self._cancelled or not audio.size:
                 return
@@ -501,6 +643,18 @@ class IndicTTSEngine(TTSEngine):
                 return
             async for chunk in speak(sentence):
                 yield chunk
+
+    @property
+    def batch_budget(self) -> int:
+        """Bytes of text to put in one f5-tts call, sized from the loaded reference.
+
+        Falls back to a conservative default before a reference is set, so
+        grouping never depends on load order.
+        """
+        if self.reference_audio is None or not self.reference_text:
+            return 300
+        seconds = len(self.reference_audio) / max(self.reference_sample_rate, 1)
+        return batch_budget_bytes(self.reference_text, min(seconds, REFERENCE_CLIP_SECONDS), self.speed)
 
     @property
     def resident_bytes(self) -> int:
