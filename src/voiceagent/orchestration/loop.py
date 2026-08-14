@@ -103,7 +103,7 @@ class VoiceLoop:
         from voiceagent.tools.memory import ForgetAllTool, RecallTool, RememberTool
         from voiceagent.tools.registry import ToolRegistry
         from voiceagent.tools.shell import ShellTool
-        from voiceagent.tts.kokoro_engine import KokoroEngine
+        from voiceagent.tts.router import build_default_router
 
         started = time.perf_counter()
         console.print("[dim]loading VAD...[/]")
@@ -139,9 +139,17 @@ class VoiceLoop:
         console.print(f"[dim]  workspace: {sandbox.root}[/]")
         console.print(f"[dim]  tools: {', '.join(registry.names)}[/]")
 
-        console.print("[dim]loading TTS (kokoro)...[/]")
-        self.tts = KokoroEngine()
-        self.tts.load()
+        # The router, not KokoroEngine directly. That is the whole of what kept
+        # this loop English-only: Devanagari sent to Kokoro produces nothing
+        # usable, so a Hindi reply had to be typed and listened to elsewhere.
+        # Hindi synthesis is now RTF 0.63, so it can keep up with playback.
+        #
+        # Nothing loads here. The router builds engines on first use and holds
+        # one at a time -- Kokoro and Chatterbox Multilingual do not fit
+        # alongside the LLM together. The cost is a reload when the reply
+        # language changes; the alternative is not fitting.
+        console.print("[dim]TTS: router (kokoro / chatterbox-multilingual, on demand)[/]")
+        self.tts = build_default_router()
 
         # NOT priming the prefix cache here, though Agent.prime() exists.
         # Two reasons, both measured: it did not move turn-one latency
@@ -150,8 +158,10 @@ class VoiceLoop:
         # executor shutdown. Turn one pays ~1.4s; every turn after is ~0.6s.
 
         total = time.perf_counter() - started
+        # The router reports nothing until it has built an engine, which is
+        # correct: quoting a TTS figure before one is loaded would be a guess.
         resident = (
-            self.stt.resident_bytes + self.agent.engine.resident_bytes + self.tts.resident_bytes
+            self.stt.resident_bytes + self.agent.engine.resident_bytes
         ) / 1024**3
         console.print(
             f"[dim]ready in {total:.1f}s  (models ~{resident:.2f} GiB resident)[/]\n"

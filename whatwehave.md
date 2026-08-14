@@ -30,7 +30,7 @@ Hard constraints the code enforces:
 | LLM + tool calling | working | Qwen3-4B 4-bit MLX, 2.16 GiB, TTFT 165 ms warm (prefix cache) |
 | TTS English | working | Kokoro-82M, RTF ~0.1, first audio 280 ms streamed |
 | TTS Hindi | working | Chatterbox Multilingual 8-bit (MIT), **RTF 0.63**, 93.5 % round-trip |
-| Live voice loop | working (English) | ~5.5 GiB resident, first audio 1.8–2.4 s |
+| Live voice loop | working (bilingual **output**) | English in; replies spoken in en or hi |
 | Tools | working | files / shell / HTTP, sandboxed, confirmation-gated |
 | Memory | working | SQLite + Fernet, key in macOS Keychain, wipeable |
 | Voice cloning (zero-shot) | working | Chatterbox Turbo (MIT), RTF ~1.6, consent required |
@@ -73,10 +73,14 @@ Chatterbox rather than IndicF5 (Phase 12 — licence tree, and it measured bette
 
 - Hindi is **Hindi only**. Chatterbox Multilingual speaks 1 Indic language where
   IndicF5 spoke 11; other Indic scripts raise `UnsupportedLanguage`.
-- Hindi is still type-and-listen, but no longer because it is slow: **RTF 0.63**,
-  down from IndicF5's 3.40. What is left is wiring — `orchestration/loop.py`
-  hardcodes `KokoroEngine()` instead of using the router, and the loop's STT is
-  English-only Moonshine.
+- The live loop is bilingual on **output only**. It speaks Hindi replies now
+  (RTF 0.97 streamed, 100 % round trip on a two-sentence reply), but you still
+  talk to it in English: the loop's STT is Moonshine, which is English-only.
+  Hindi *input* needs whisper-large-v3-turbo in the loop — a separate change.
+- **Hindi needs an enrolled voice.** Chatterbox is a cloning model with no
+  built-in speaker, unlike Kokoro, so Hindi is silent until a voice is enrolled
+  in `voice-web`. No default speaker ships: it would be a real person's voice
+  with no consent record.
 - Hindi needs 3.0 GiB free to synthesize, up from IndicF5's 2.5: the 8-bit
   checkpoint is 1.33 GiB resident, 2.77 GiB peak.
 - Sub-1 s turn latency is **not** met: ~1.8 s to first audio warm, ~2.4 s cold.
@@ -112,9 +116,10 @@ See `plan.md` for the strategy this now serves, and why it changed.
 
 **Next, in order**
 
-1. **Bilingual live loop.** RTF 1.24 is close; streaming/chunked synthesis, a
-   warm model and no per-turn reload should get Hindi under 1.0. A Hindi agent
-   you can *talk to* is the product; type-and-listen is a demo of a component.
+1. **Hindi input.** The loop speaks Hindi but cannot hear it — Moonshine is
+   English-only. Swapping in whisper-large-v3-turbo (CER 4.8 %, RTF 0.24) for
+   Indic utterances completes the bilingual loop. This is the last piece between
+   here and "a Hindi agent you can talk to".
 2. **Self-contained desktop bundle** — replace `num2words` with a Hindi/English
    number routine we own (needed for lakh/crore anyway) and drop the last
    recorded licence exception.

@@ -466,8 +466,13 @@ class ChatterboxIndicEngine(TTSEngine):
     def _require_reference(self) -> None:
         if self.reference_audio is None:
             raise RuntimeError(
-                "Chatterbox is a voice-cloning model: call set_reference() with a "
-                "consented clip before synthesizing."
+                "Hindi needs an enrolled voice. Chatterbox Multilingual is a "
+                "cloning model with no built-in speaker, so unlike Kokoro it "
+                "cannot speak until it has a reference clip.\n\n"
+                "  uv run voice-web   ->   http://127.0.0.1:8823   ->   enrol a voice\n\n"
+                "No default speaker ships with this project on purpose: it would "
+                "be a real person's voice with no consent record attached. "
+                "Callers holding their own clip can pass it to set_reference()."
             )
 
     def _ensure_conds(self):

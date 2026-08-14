@@ -103,6 +103,80 @@ class TTSRouter:
         async for chunk in engine.synthesize(prepared, voice=voice):
             yield chunk
 
+    async def synthesize_stream(
+        self, text_chunks: AsyncIterator[str], voice: str | None = None
+    ) -> AsyncIterator[AudioChunk]:
+        """Route a live token stream, deciding the language on the first sentence.
+
+        The live loop used to hold a `KokoroEngine` directly, which is why it was
+        English-only: Devanagari sent to Kokoro produces nothing usable. Routing
+        here instead makes the loop bilingual on output.
+
+        Three things this has to get right that `synthesize` does not.
+
+        **When to decide.** Script detection is reliable but needs text, and the
+        first token of a Hindi reply can easily be an English loanword. Deciding
+        on the first *sentence* rather than the first token costs nothing --- the
+        engine could not have started before a sentence boundary anyway --- and
+        removes a whole class of "answered in the wrong voice". If the reply is
+        shorter than one sentence, the flush decides.
+
+        **Normalizing per sentence, not per token.** `normalize_hi` transliterates
+        Latin to Devanagari and rewrites digits as words; both need whole words,
+        and the Hindi engine measurably wants it (h1 scores 94 % raw against 98 %
+        transliterated). Applying it to a token at a time would corrupt exactly
+        the multi-character sequences it exists to handle.
+
+        **Not re-deciding mid-reply.** The engine is chosen once. A reply that
+        drifts from Hindi to English would otherwise evict and reload a model
+        mid-sentence, which is seconds of silence; and the router holds one engine
+        at a time, so it genuinely cannot do both. The first sentence wins.
+        """
+        from voiceagent.tts.chunker import SentenceChunker
+
+        chunker = SentenceChunker()
+        pending: list[str] = []
+        engine: TTSEngine | None = None
+        route: Route | None = None
+
+        async def sentences() -> AsyncIterator[str]:
+            for sentence in pending:
+                yield route.normalizer(sentence) if route.normalizer else sentence
+            async for text in text_chunks:
+                for sentence in chunker.feed(text):
+                    yield route.normalizer(sentence) if route.normalizer else sentence
+            for sentence in chunker.flush():
+                yield route.normalizer(sentence) if route.normalizer else sentence
+
+        # Pull until there is a whole sentence to decide on, or the stream ends.
+        async for text in text_chunks:
+            pending.extend(chunker.feed(text))
+            if pending:
+                break
+        else:
+            pending.extend(chunker.flush())
+
+        if not pending:
+            return
+
+        route, _ = self.route_for(" ".join(pending))
+        engine = self._activate(route)
+        async for chunk in engine.synthesize_stream(sentences(), voice=voice):
+            yield chunk
+
+    def cancel(self) -> None:
+        """Stop synthesis immediately, on whichever engine is speaking.
+
+        Required for barge-in: the live loop calls this the moment the VAD hears
+        the user start talking, and it used to be calling straight through to a
+        `KokoroEngine`. Only the active route can be mid-utterance, but every
+        built engine is cancelled anyway --- an engine left with `_cancelled`
+        False after an interrupted turn would run one more span on its next call.
+        """
+        for route in self.routes:
+            if route._engine is not None:
+                route._engine.cancel()
+
     def unload(self) -> None:
         for route in self.routes:
             if route._engine is not None:
@@ -137,9 +211,45 @@ def build_default_router(keep_resident: bool = False) -> TTSRouter:
         return KokoroEngine()
 
     def indic() -> TTSEngine:
+        """Chatterbox Multilingual, pointed at an enrolled voice.
+
+        Unlike Kokoro this is a *cloning* model with no built-in speaker, so it
+        cannot say anything until it has a reference clip. That is the second
+        reason the live loop was English-only, and the one that survives now that
+        Hindi runs at RTF 0.63: speed was never the whole story.
+
+        The clip comes from the consent-gated store, so enrolling a voice in
+        `voice-web` is what turns Hindi on. With no enrolled voice the engine
+        raises its own error naming the fix; nothing is guessed and no default
+        speaker is shipped, because a shipped default would be a real person's
+        voice with no consent record attached to it.
+        """
         from voiceagent.tts.chatterbox_indic import ChatterboxIndicEngine
 
-        return ChatterboxIndicEngine()
+        engine = ChatterboxIndicEngine()
+        try:
+            import io
+
+            import soundfile as sf
+
+            from voiceagent.voice_clone.store import VoiceProfileStore
+
+            store = VoiceProfileStore()
+            profiles = store.list()
+            if profiles:
+                profile = profiles[0]
+                audio, rate = sf.read(
+                    io.BytesIO(store.reference_audio(profile.profile_id)), dtype="float32"
+                )
+                if audio.ndim > 1:
+                    audio = audio.mean(axis=1)
+                engine.set_reference(audio, profile.reference_text or "", rate)
+        except Exception:  # noqa: BLE001
+            # No store, no profile, or an unreadable clip. Left unset so the
+            # engine's own message explains it rather than this failing at
+            # construction, which would take the English route down with it.
+            pass
+        return engine
 
     return TTSRouter(
         routes=[

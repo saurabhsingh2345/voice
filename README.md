@@ -917,8 +917,11 @@ Known gaps, stated rather than buried:
 - Hindi covers **Hindi only**. IndicF5 spoke 11 Indian languages; Chatterbox
   Multilingual speaks 1 of them. Other Indic scripts now raise
   `UnsupportedLanguage` rather than being spoken badly (Phase 12).
-- Hindi is still **type-and-listen** — but at RTF 1.24 rather than 3.40, so a
-  bilingual live loop is now an engineering problem rather than a research one.
+- The live loop speaks Hindi (RTF 0.63 batch, 0.97 streamed) but cannot **hear**
+  it: its STT is Moonshine, which is English-only. Bilingual output, English
+  input.
+- Hindi needs an **enrolled voice**. Chatterbox clones and has no built-in
+  speaker, so Hindi is silent until one is enrolled in `voice-web`.
 - No acoustic echo cancellation — use headphones (Phase 4).
 - The desktop app is a launcher and still needs the checkout and its `.venv`.
 - Hindi *quality* beyond intelligibility still has no result. The blind harness
