@@ -102,7 +102,15 @@ def test_roundtrip_and_encryption_at_rest(tmp_store):
 
     on_disk = (tmp_store.root / profile.profile_id / "reference.wav.enc").read_bytes()
     assert on_disk != raw, "reference audio must not be stored in plaintext"
-    assert b"RIFF" not in on_disk, "wav header leaked -- not encrypted"
+
+    # A wav file *begins* with RIFF. Asserting the four bytes are absent
+    # anywhere was flaky at ~4 %, and measurably so: Fernet output is urlsafe
+    # base64, "RIFF" is four characters of that alphabet, and a 512 KB blob has
+    # roughly len/64^4 chances to contain it. A security assertion that cries
+    # wolf once in twenty-five runs is worse than no assertion, because the way
+    # people make it stop is to stop reading it.
+    assert not on_disk.startswith(b"RIFF"), "stored file is a plaintext wav"
+    assert raw not in on_disk, "plaintext audio is embedded in the stored file"
 
     assert tmp_store.reference_audio(profile.profile_id) == raw
 

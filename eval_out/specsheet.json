@@ -1,0 +1,60 @@
+{
+  "host": {
+    "platform": "macOS-26.2-arm64-arm-64bit",
+    "machine": "arm64",
+    "cpus": 12,
+    "ram_gib": 18.0,
+    "free_gib": 6.46,
+    "swap_used_gib": 13.72,
+    "load_1m": 3.0,
+    "calibration_ms": 19.4
+  },
+  "machine_quiet": true,
+  "machine_note": "quiet enough to measure (0.25 load per core, 6.46 GiB free)",
+  "licences": {
+    "model_violations": [],
+    "dependency_violations": [],
+    "accepted_exceptions": [
+      "num2words"
+    ],
+    "clean": true
+  },
+  "hindi_tts": {
+    "engine": "Chatterbox Multilingual v3 (MLX, 8-bit)",
+    "checkpoint": "data/models/chatterbox-multilingual-v3-8bit",
+    "load_s": 4.2,
+    "resident_gib": 1.33,
+    "rtf_median": 0.7,
+    "rtf_worst": 0.95,
+    "sentences": 12,
+    "audio_seconds": 50.5
+  },
+  "hindi_stt": {
+    "engine": "whisper-large-v3-turbo (MLX), pinned hi",
+    "load_s": 1.5,
+    "resident_gib": 2.31,
+    "cer_percent": 9.2,
+    "rtf_median": 0.16,
+    "clips": 12
+  },
+  "roundtrip": {
+    "human recording (metric ceiling)": {
+      "mean_percent": 90.2,
+      "worst_percent": 80.6,
+      "code_mixed_percent": 91.5,
+      "sentences": 12
+    },
+    "IndicF5 (previous engine)": {
+      "mean_percent": 88.7,
+      "worst_percent": 74.5,
+      "code_mixed_percent": 86.0,
+      "sentences": 12
+    },
+    "Chatterbox 8-bit (current)": {
+      "mean_percent": 93.5,
+      "worst_percent": 83.9,
+      "code_mixed_percent": 94.5,
+      "sentences": 12
+    }
+  }
+}
