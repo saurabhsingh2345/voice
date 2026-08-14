@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import os
 import time
 from pathlib import Path
 
@@ -1076,11 +1077,42 @@ async def benchmark_unrecord(slug: str) -> dict:
     return {"deleted": slug}
 
 
+#: Default port, and the one the desktop shell looks for.
+DEFAULT_PORT = 8823
+
+#: Overridable, but only the port and only to loopback.
+#:
+#: Two reasons, and the second is the one that made this necessary. A second
+#: instance -- the packaged app while a checkout is already serving, say -- would
+#: otherwise die on "address already in use", and did: a bundle test appeared to
+#: pass because the responses were coming from an unrelated server on the same
+#: port, which is a worse failure than a crash because it looks like success.
+#:
+#: The host stays pinned to 127.0.0.1. Making it configurable would turn one
+#: environment variable into the difference between a private assistant and one
+#: answering the network, and nothing in this project needs that.
+PORT_ENV = "VOICEAGENT_PORT"
+
+
+def resolved_port() -> int:
+    raw = os.environ.get(PORT_ENV, "").strip()
+    if not raw:
+        return DEFAULT_PORT
+    try:
+        port = int(raw)
+    except ValueError as exc:
+        raise SystemExit(f"{PORT_ENV}={raw!r} is not a port number") from exc
+    if not (1 <= port <= 65535):
+        raise SystemExit(f"{PORT_ENV}={port} is not in 1-65535")
+    return port
+
+
 def main() -> int:
     import uvicorn
 
-    print("\n  Local Voice Agent -> http://127.0.0.1:8823\n")
-    uvicorn.run(app, host="127.0.0.1", port=8823, log_level="warning")
+    port = resolved_port()
+    print(f"\n  Local Voice Agent -> http://127.0.0.1:{port}\n")
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
     return 0
 
 

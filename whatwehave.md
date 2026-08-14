@@ -36,7 +36,7 @@ Hard constraints the code enforces:
 | Voice cloning (zero-shot) | working | Chatterbox Turbo (MIT), RTF ~1.6, consent required |
 | Voice dataset builder | working | 96 clips / 9.7 min; the IndicF5 fine-tune it fed is retired |
 | Web UI | working | `voice-web` → 127.0.0.1:8823 |
-| Desktop app | launcher only | 2.9 MB Tauri arm64, still needs the checkout + `.venv` |
+| Desktop app | **self-contained** | 1.3 GB `.app`, embeds Python; no checkout, no uv, no venv |
 | Blind A/B listening test | **built, unrated** | 12 held-out sentences, real / vocoded / ours |
 | Licence audit | **green** | `voice-doctor` exits 0 with every extra installed |
 
@@ -90,11 +90,11 @@ Chatterbox rather than IndicF5 (Phase 12 — licence tree, and it measured bette
   checkpoint is 1.33 GiB resident, 2.77 GiB peak.
 - Sub-1 s turn latency is **not** met: ~1.8 s to first audio warm, ~2.4 s cold.
 - No acoustic echo cancellation — headphones advised.
-- Desktop app is a launcher, not a self-contained bundle. **No longer blocked on
-  licences**: `num2words` (LGPL) was the last exception and is now replaced by
-  `text/numbers.py` + `text/num2words_shim.py`, verified at full parity and
-  uninstalled. `ACCEPTED_EXCEPTIONS` is empty. What remains is packaging work —
-  embedding Python and the weights — not a licence problem.
+- The desktop app is **unsigned and unnotarised**. Gatekeeper will refuse it on
+  another Mac until it is signed; `xattr -dr com.apple.quarantine` is the manual
+  workaround and is not a shipping answer.
+- Model weights are **not** in the bundle (~7.6 GB against the app's 1.3 GB), so
+  first use needs network and a long wait.
 - Synthetic voice runs ~19 % faster than the speaker (0.81 ratio). The old 0.75
   figure was an f5-tts duration artifact and did **not** transfer; Chatterbox
   exposes no speed control, so there is no knob to correct it with.
@@ -127,8 +127,8 @@ See `plan.md` for the strategy this now serves, and why it changed.
 1. **Publish the measured spec sheet** (plan.md §6) — latency, RTF per language,
    resident memory per configuration, CER, round-trip against its real ceiling.
    Everything it needs is now measured.
-2. **Self-contained desktop bundle** — the licence blocker is gone; what is left
-   is embedding Python and the weights in the Tauri shell.
+2. **Sign and notarise the `.app`** — the bundle is built and verified running
+   outside any checkout; Gatekeeper is what is left.
 
 **Later**
 

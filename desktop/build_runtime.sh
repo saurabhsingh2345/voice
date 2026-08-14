@@ -104,6 +104,22 @@ uv pip install \
     --no-cache \
     "$PROJECT[stt,llm,tts,clone,loop,tools,indic]" >/dev/null
 
+echo "==> installing spaCy's English model"
+# Kokoro's text frontend loads en_core_web_sm, and mlx-audio downloads it with
+# `pip install` on first use if it is missing. That is fine in a checkout and
+# wrong in a bundle: it mutates Contents/Resources at runtime, which fails
+# outright once the app is signed or installed read-only, and it needs network
+# and pip on a first run that is otherwise offline.
+#
+# Caught by running the built .app and watching it pip-install 15 MB into
+# itself. Pinned rather than floating, so a build is reproducible. MIT.
+uv pip install \
+    --python "$RUNTIME_PY" \
+    --link-mode=copy \
+    --no-cache \
+    "en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" \
+    >/dev/null
+
 echo "==> trimming"
 # Caches and bytecode only. Not source: an install that differs from the tested
 # one is a bad trade for a few megabytes.
@@ -133,8 +149,13 @@ assert is_installed()
 import num2words
 
 assert num2words.num2words(1999, to="year") == "nineteen ninety-nine"
+import importlib.util
+
+assert importlib.util.find_spec("en_core_web_sm") is not None, \
+    "spaCy model missing: the app would pip-install it into itself on first use"
+
 print(f"    prefix {sys.prefix}")
-print("    imports clean, shim active, no checkout on sys.path")
+print("    imports clean, shim active, spaCy model present, no checkout on sys.path")
 CHECK
 )
 
