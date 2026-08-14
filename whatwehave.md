@@ -145,3 +145,22 @@ See `plan.md` for the strategy this now serves, and why it changed.
   20 layers away from its cause. Load and generate on one owned thread.
 - Filters that select on condition (e.g. a flat attention threshold across clips
   of different lengths) bias the comparison they are meant to protect.
+
+## Open measurement, blocked on the machine
+
+**Hindi under RTF 1.0 is unresolved, and the blocker is the machine, not the code.**
+
+Profiled: T3 (token generation) is ~58 % of synthesis and S3Gen ~42 %, so
+quantizing the transformer is the lever. `voiceagent.tts.quantize` builds an
+8-bit checkpoint from the MIT source in ~7 s (community requants exist but
+declare no licence, so they cannot go in `models.py`).
+
+Memory is measured and unambiguous: **1.33 GiB resident / 2.77 GiB peak**, against
+fp32's 3.04 / 5.09. Speed is **not** established. The first five held-out
+sentences ran at RTF 0.63–0.95 — under real time — and then the same engine with
+the same seeds measured 6–12 on the rest and stayed there across three repeats.
+That was a virtualization process thrashing the host: load average **537**, 13 GiB
+of swap in use, and Whisper could no longer transcribe 24 short clips inside ten
+minutes.
+
+Re-run on an idle machine before adopting: `uv run python -m voiceagent.eval.hindi_tts`.
