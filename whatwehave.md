@@ -97,7 +97,10 @@ Chatterbox rather than IndicF5 (Phase 12 — licence tree, and it measured bette
   approximated. Add frequent words to the table.
 - Memory encryption is weaker than SQLCipher: schema, row counts, timestamps stay
   visible; recall decrypts and scores in Python (wrong at large scale).
-- Qwen3 occasionally degenerates into a repetition loop (~1 in 80 generations).
+- Qwen3's repetition loop is bounded, not eliminated: sampling now uses Qwen's
+  published top_p/top_k (it was temperature-only), and `_find_repetition_cycle`
+  stops generation after 4 repeats of a token cycle. `engine.degenerations`
+  counts how often it fires; baseline was ~1 in 80.
 - Machine reality: 18 GB Mac, often 2–5 GB free — models load and evict per
   language; LLM fine-tuning is off the table here.
 
@@ -107,12 +110,10 @@ See `plan.md` for the strategy this now serves, and why it changed.
 
 **Next, in order**
 
-1. **Fix the Qwen3 repetition loop** (~1 in 80). Fatal in a live demo, invisible
-   to every quality metric.
-2. **Bilingual live loop.** RTF 1.24 is close; streaming/chunked synthesis, a
+1. **Bilingual live loop.** RTF 1.24 is close; streaming/chunked synthesis, a
    warm model and no per-turn reload should get Hindi under 1.0. A Hindi agent
    you can *talk to* is the product; type-and-listen is a demo of a component.
-3. **Self-contained desktop bundle** — replace `num2words` with a Hindi/English
+2. **Self-contained desktop bundle** — replace `num2words` with a Hindi/English
    number routine we own (needed for lakh/crore anyway) and drop the last
    recorded licence exception.
 

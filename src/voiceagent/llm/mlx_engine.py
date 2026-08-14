@@ -22,6 +22,74 @@ DEFAULT_REPO = "mlx-community/Qwen3-4B-Instruct-2507-4bit"
 TOOL_OPEN = "<tool_call>"
 TOOL_CLOSE = "</tool_call>"
 
+#: Qwen3-2507 Instruct's own recommended sampling, which this engine was not using.
+#:
+#: It sampled on temperature alone --- no truncation at all --- and that is the
+#: setup a degenerate cycle survives in: once the model is looping,
+#: `ऊपर से ऊपर ऊपर से ऊपर …`, the loop's own tokens dominate the distribution and
+#: an untruncated tail keeps handing back the ones that continue it. Truncating to
+#: the top 20 / 0.8 mass does not by itself break a cycle whose tokens *are* the
+#: top of the distribution, which is why `_find_repetition_cycle` exists as well;
+#: it does remove the long tail of unlikely tokens that make the model wander into
+#: one. Qwen publishes these per variant, and 0.7 here already matched the
+#: Instruct (non-thinking) row --- top_p and top_k were simply missing.
+TOP_P = 0.8
+TOP_K = 20
+
+#: Qwen's documented lever for endless repetition is `presence_penalty` (0-2),
+#: with an explicit warning that higher values cause **language mixing**. Left at
+#: 0.0 by default, because language mixing is not a cosmetic risk in this project:
+#: the reply's language selects the TTS engine (see the router), and neither
+#: engine degrades gracefully into the other's language. A reply that drifts from
+#: Hindi to English mid-sentence is routed on its first characters and then
+#: mispronounced for the rest. Available, off, and documented rather than tuned
+#: blind. Note Qwen also says to leave `repetition_penalty` disabled, so this
+#: engine does not set one.
+PRESENCE_PENALTY = 0.0
+
+#: Longest cycle `_find_repetition_cycle` will look for, in tokens.
+MAX_CYCLE_TOKENS = 12
+
+#: How many times a cycle must repeat before generation is abandoned.
+#:
+#: A single token repeated needs a longer run than a phrase does: "!!!!" and a
+#: row of newlines are ordinary, whereas the same four-token phrase four times in
+#: a row is not language. Both thresholds are on *token* identity, not text, so
+#: they do not fire on a legitimately repeated word in different contexts.
+MIN_CYCLE_REPEATS = 4
+MIN_SINGLE_TOKEN_REPEATS = 8
+
+
+def _find_repetition_cycle(tokens: list[int]) -> int | None:
+    """Length of the cycle the tail of `tokens` is stuck in, or None.
+
+    Qwen3 degenerates into a repetition loop roughly once in 80 generations,
+    observed as `ऊपर से ऊपर ऊपर से ऊपर …` running until the token budget is
+    exhausted. It is not attributable to any prompt, no quality metric sees it,
+    and in front of a listener it is the worst failure the system has: 512 tokens
+    of the same phrase, read aloud.
+
+    Sampling parameters lower the odds and cannot bound them, so this is the part
+    that actually stops it. Checked after every token; comparing at most
+    MAX_CYCLE_TOKENS x MIN_SINGLE_TOKEN_REPEATS integers, so it costs nothing
+    against a forward pass.
+
+    Deliberately exact-match on token ids rather than a similarity measure. A
+    fuzzy detector would eventually truncate a legitimate answer, and cutting off
+    a correct reply is a worse failure than the one being fixed --- it is silent,
+    where the loop is obvious.
+    """
+    for period in range(1, MAX_CYCLE_TOKENS + 1):
+        repeats = MIN_SINGLE_TOKEN_REPEATS if period == 1 else MIN_CYCLE_REPEATS
+        span = period * repeats
+        if len(tokens) < span:
+            continue
+        tail = tokens[-span:]
+        cycle = tail[:period]
+        if all(tail[i : i + period] == cycle for i in range(0, span, period)):
+            return period
+    return None
+
 
 class _ToolCallParser:
     """Splits a raw token stream into plain text and completed tool calls.
@@ -117,10 +185,21 @@ class MLXLLMEngine(LLMEngine):
         repo: str = DEFAULT_REPO,
         temperature: float = 0.7,
         system_prompt: str | None = None,
+        top_p: float = TOP_P,
+        top_k: int = TOP_K,
+        presence_penalty: float = PRESENCE_PENALTY,
     ) -> None:
         self.repo = repo
         self.temperature = temperature
         self.system_prompt = system_prompt
+        self.top_p = top_p
+        self.top_k = top_k
+        self.presence_penalty = presence_penalty
+        #: How many generations were cut short by `_find_repetition_cycle`.
+        #: Counted rather than logged-and-forgotten: the baseline is ~1 in 80, so
+        #: a rate far above that means the sampling change made things worse, and
+        #: there is no other signal that would show it.
+        self.degenerations = 0
         self._model = None
         self._tokenizer = None
         self._peak_bytes = 0
@@ -254,10 +333,15 @@ class MLXLLMEngine(LLMEngine):
             raise RuntimeError("load() must be called before stream()")
 
         from mlx_lm import stream_generate
-        from mlx_lm.sample_utils import make_sampler
+        from mlx_lm.sample_utils import make_logits_processors, make_sampler
 
         prompt_tokens = self._prepare_prompt(self._render(messages, tools))
-        sampler = make_sampler(temp=self.temperature)
+        sampler = make_sampler(temp=self.temperature, top_p=self.top_p, top_k=self.top_k)
+        logits_processors = (
+            make_logits_processors(presence_penalty=self.presence_penalty)
+            if self.presence_penalty
+            else None
+        )
         parser = _ToolCallParser()
 
         queue: asyncio.Queue[Chunk | None] = asyncio.Queue()
@@ -267,6 +351,7 @@ class MLXLLMEngine(LLMEngine):
         def produce() -> None:
             """Run the blocking generator on a worker thread."""
             first = True
+            generated: list[int] = []
             try:
                 for response in stream_generate(
                     self._model,
@@ -274,11 +359,13 @@ class MLXLLMEngine(LLMEngine):
                     prompt_tokens,
                     max_tokens=max_tokens,
                     sampler=sampler,
+                    logits_processors=logits_processors,
                     prompt_cache=self._cache,
                 ):
                     # Generated tokens land in the cache too; track them so the
                     # next turn's prefix match lines up.
                     self._cached_tokens.append(response.token)
+                    generated.append(response.token)
                     ttft = None
                     if first:
                         ttft = (time.perf_counter() - started) * 1000
@@ -295,6 +382,15 @@ class MLXLLMEngine(LLMEngine):
 
                     if response.peak_memory:
                         self._peak_bytes = max(self._peak_bytes, response.peak_memory)
+
+                    # Stop a degenerate loop rather than reading 512 tokens of it
+                    # aloud. Checked after the chunk is emitted, so the caller
+                    # keeps the text generated up to this point -- a reply that
+                    # ends a few repeats in beats one that never ends.
+                    period = _find_repetition_cycle(generated)
+                    if period is not None:
+                        self.degenerations += 1
+                        break
 
                 tail = parser.flush()
                 if tail:
