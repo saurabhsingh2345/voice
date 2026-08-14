@@ -17,7 +17,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import numpy as np
 import soundfile as sf
 
 WHISPER_REPO = "mlx-community/whisper-large-v3-turbo"
@@ -32,12 +31,15 @@ def transcribe(path: str | Path, language: str | None = None) -> tuple[str, str]
     """
     import mlx_whisper
 
+    from voiceagent.eval.audio import resample
+
     audio, sr = sf.read(str(path), dtype="float32")
     if audio.ndim > 1:
         audio = audio.mean(axis=1)
-    if sr != 16_000:
-        idx = (np.arange(int(len(audio) * 16_000 / sr)) * sr / 16_000).astype(int)
-        audio = audio[idx[idx < len(audio)]]
+    # Band-limited, not index-dropping. This is the input to the only automated
+    # ground truth the project has, and dropping samples folded everything above
+    # 8 kHz back on top of the speech it was about to be judged on.
+    audio = resample(audio, sr, 16_000)
 
     result = mlx_whisper.transcribe(
         audio, path_or_hf_repo=WHISPER_REPO, fp16=True, verbose=None, language=language
@@ -81,6 +83,33 @@ EQUIVALENT_LANGUAGES: dict[str, frozenset[str]] = {
 }
 
 
+def normalized(text: str, language: str | None) -> str:
+    """Both sides of the comparison, in the script the model actually speaks.
+
+    Without this the check scores its own text handling instead of the audio. Two
+    ways it goes wrong, and both are silent:
+
+      - Whisper writes loanwords in Devanagari. Expected text keeps them in Latin,
+        so "एक documentary देखी" is compared against "एक डॉक्यूमेंटरी देखी" and loses
+        every character of the English word. The engine transliterates before
+        synthesis, so Devanagari is the correct side to compare on.
+      - Whisper applies inverse text normalization, so a correct
+        "एक हज़ार दो सौ निन्यानवे" comes back as "1299".
+
+    Measured: a flawless human reading of the code-mixed held-out sentence scored
+    54 % raw. A human recording is intelligible by construction, which is what
+    identifies that number as the scorer's floor rather than the speaker's.
+
+    `hindi_tts` has always done this; `check` never did, and `check` is the one the
+    README tells you to reach for on a single file.
+    """
+    if language != "hi":
+        return text
+    from voiceagent.text.normalize_hi import normalize
+
+    return normalize(text)
+
+
 def check(path: str | Path, expected: str, expect_language: str | None = None) -> bool:
     heard, language = transcribe(path)
 
@@ -90,11 +119,17 @@ def check(path: str | Path, expected: str, expect_language: str | None = None) -
         # script-for-script rather than scoring Devanagari against Perso-Arabic.
         heard, _ = transcribe(path, language=expect_language)
         language = expect_language
-    overlap = character_overlap(expected, heard)
+
+    scored_expected = normalized(expected, expect_language)
+    scored_heard = normalized(heard, expect_language)
+    overlap = character_overlap(scored_expected, scored_heard)
 
     print(f"file     : {path}")
     print(f"expected : {expected}")
     print(f"heard    : {heard}")
+    if scored_expected != expected or scored_heard != heard:
+        print(f"compared : {scored_expected}")
+        print(f"       vs : {scored_heard}")
     print(f"language : {language}" + (f" (expected {expect_language})" if expect_language else ""))
     print(f"overlap  : {overlap:.0%}")
 
