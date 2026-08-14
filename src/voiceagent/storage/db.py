@@ -29,7 +29,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-DEFAULT_DB = Path(__file__).resolve().parents[3] / "data" / "history.db"
+from voiceagent import paths
+
+#: See voiceagent.paths -- in a packaged app this must not land inside the
+#: bundle, which is read-only and replaced on update.
+DEFAULT_DB = paths.data_dir() / "history.db"
 
 KEYRING_SERVICE = "voiceagent.storage"
 KEYRING_USER = "history-encryption-key"

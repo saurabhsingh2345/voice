@@ -30,6 +30,9 @@
       "minimumSystemVersion": "11.0"
     },
     "shortDescription": "Fully local voice AI agent",
-    "longDescription": "A privacy-first voice assistant. Speech recognition, language model, speech synthesis and voice cloning all run on this Mac. No cloud APIs."
+    "longDescription": "A privacy-first voice assistant. Speech recognition, language model, speech synthesis and voice cloning all run on this Mac. No cloud APIs. Ships its own Python runtime, so no developer tools are required; model weights download on first use.",
+    "resources": [
+      "runtime/**/*"
+    ]
   }
 }

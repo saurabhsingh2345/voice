@@ -23,7 +23,13 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-DATA_DIR = Path(__file__).resolve().parents[3] / "data" / "voices"
+from voiceagent import paths
+
+#: Resolved through `voiceagent.paths`, not from `__file__`. Deriving it from
+#: the module location put a packaged app's voice profiles inside its own .app
+#: bundle -- read-only, and replaced wholesale on every update. Consented
+#: recordings are not a cache.
+DATA_DIR = paths.data_dir() / "voices"
 
 KEYRING_SERVICE = "voiceagent.voice_clone"
 KEYRING_USER = "profile-encryption-key"

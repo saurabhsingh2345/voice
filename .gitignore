@@ -31,3 +31,6 @@ desktop/src-tauri/target/
 
 # Scratch: list of containers that were running, written during a benchmark run.
 .docker-was-running.txt
+
+# Built by desktop/build_runtime.sh -- 1.3 GB, reproducible in a few minutes.
+desktop/src-tauri/runtime/

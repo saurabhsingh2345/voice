@@ -5,11 +5,14 @@
 // window. Everything still runs on this machine; the window points at
 // 127.0.0.1 and nothing is fetched from the internet.
 //
-// The server is a child process rather than a bundled runtime, which means the
-// app currently requires the project checkout and `uv` to be present. Embedding
-// a Python runtime is a separate job -- and one with a licensing constraint:
-// num2words is LGPL, so the dependency must stay replaceable rather than being
-// frozen into one opaque archive.
+// The server runs from a Python runtime bundled inside Contents/Resources, so
+// the app needs no checkout, no uv and no venv. `desktop/build_runtime.sh`
+// builds that runtime; the checkout path below is kept only for `tauri dev`.
+//
+// This was blocked on a licence for a long time and no longer is. num2words is
+// LGPL-2.1, and the LGPL's one real obligation is that recipients can replace
+// the library -- which a frozen bundle cannot offer. It has been replaced by
+// voiceagent.text.numbers, so nothing non-permissive is welded shut in here.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -41,6 +44,33 @@ impl ServerProcess {
             let _ = child.wait();
         }
     }
+}
+
+/// The Python runtime inside the bundle, if this is a bundled build.
+///
+/// `Contents/MacOS/<binary>` sits beside `Contents/Resources/runtime`. Resolved
+/// from the executable rather than through Tauri's resource API because this is
+/// needed during setup, before a window exists, and because a wrong answer here
+/// should be a visible "not found" rather than a panic.
+fn bundled_runtime() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let resources = exe.parent()?.parent()?.join("Resources");
+    let runtime = resources.join("runtime");
+    runtime.join("bin").join("python3.12").is_file().then_some(runtime)
+}
+
+/// Where a bundled app keeps voices, history and clips.
+///
+/// Never inside the bundle: Contents/Resources is read-only in a normal install
+/// and is replaced wholesale on update, and a consented voice recording is not
+/// something to lose on an update. Passed to Python as VOICEAGENT_DATA_DIR so
+/// the launcher and the server cannot disagree about it -- see
+/// `voiceagent.paths`.
+fn user_data_dir() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    let dir = home.join("Library/Application Support/Local Voice Agent");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
 }
 
 fn project_root() -> Option<PathBuf> {
@@ -102,6 +132,49 @@ fn log_file(root: &PathBuf) -> Stdio {
         .unwrap_or_else(|_| Stdio::null())
 }
 
+/// Start the bundled server. Returns None when this is not a bundled build.
+///
+/// PYTHONHOME is the load-bearing line. python-build-standalone bakes its
+/// build-time prefix into the interpreter and only overrides it when PYTHONHOME
+/// says otherwise, so without this the copied interpreter reports a prefix back
+/// on the *build* machine and finds no packages on anyone else's. It is the
+/// difference between a bundle that works and one that works only here.
+///
+/// Invoked as `-m voiceagent.web.server` rather than through the `voice-web`
+/// console script: pip bakes an absolute shebang into console scripts at
+/// install time, which is precisely the thing a relocatable bundle cannot rely
+/// on.
+fn spawn_bundled(runtime: &PathBuf) -> Option<std::io::Result<Child>> {
+    let python = runtime.join("bin").join("python3.12");
+    if !python.is_file() {
+        return None;
+    }
+    let data = user_data_dir()?;
+    let log = std::fs::File::create(data.join("server.log"))
+        .map(Stdio::from)
+        .unwrap_or_else(|_| Stdio::null());
+    let errors = std::fs::File::options()
+        .create(true)
+        .append(true)
+        .open(data.join("server.log"))
+        .map(Stdio::from)
+        .unwrap_or_else(|_| Stdio::null());
+
+    Some(
+        Command::new(python)
+            .args(["-m", "voiceagent.web.server"])
+            .env("PYTHONHOME", runtime)
+            .env("VOICEAGENT_DATA_DIR", &data)
+            // Unbuffered, so a crash leaves its reason in the log rather than
+            // in a buffer that is discarded when the process dies.
+            .env("PYTHONUNBUFFERED", "1")
+            .current_dir(&data)
+            .stdout(log)
+            .stderr(errors)
+            .spawn(),
+    )
+}
+
 fn spawn_server(root: &PathBuf) -> std::io::Result<Child> {
     let _ = std::fs::create_dir_all(root.join("data"));
 
@@ -150,16 +223,23 @@ fn main() {
             let already_running = port_is_open();
 
             if !already_running {
-                match project_root() {
-                    Some(root) => match spawn_server(&root) {
-                        Ok(child) => {
-                            *app.state::<ServerProcess>().0.lock().unwrap() = Some(child);
-                        }
-                        Err(err) => {
-                            eprintln!("could not start the voice server: {err}");
-                        }
-                    },
-                    None => eprintln!("could not locate the project (no pyproject.toml above the binary)"),
+                // Bundled runtime first, checkout second. That order matters:
+                // a developer running the built .app from inside the project
+                // should exercise what shipped, not their working tree.
+                let started = match bundled_runtime() {
+                    Some(runtime) => spawn_bundled(&runtime),
+                    None => None,
+                };
+                let started = started.or_else(|| project_root().map(|root| spawn_server(&root)));
+
+                match started {
+                    Some(Ok(child)) => {
+                        *app.state::<ServerProcess>().0.lock().unwrap() = Some(child);
+                    }
+                    Some(Err(err)) => eprintln!("could not start the voice server: {err}"),
+                    None => eprintln!(
+                        "no bundled runtime in Contents/Resources and no checkout above the binary"
+                    ),
                 }
             }
 
