@@ -421,6 +421,15 @@ What to produce:
 
 ## 7. Phase 3 — First paying customer (6–10 weeks, starts during Phase 1)
 
+**The material is written** — `outreach/`, 2026-08-14: a claims register, the
+one-pager, first-contact emails for the three wedges below plus the AI4Bharat
+letter, a call guide with the eight objections, pricing, and the target filter.
+`outreach/CLAIMS.md` is the gate on every number that leaves the building, and
+it opens by forbidding the one this project would most like to quote.
+
+What is left in this phase is not desk work: record the offline demo, build ten
+real names against the filter, and send.
+
 **Wedges, re-ranked against the evidence:**
 
 **1. Regulated-enterprise private voice agent.** ⭐ BFSI, insurance, healthcare,
