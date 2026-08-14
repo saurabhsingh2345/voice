@@ -1,0 +1,429 @@
+<title>Hindi Voice Agent Spec Sheet</title>
+<style>
+  :root {
+    --bg: #f2f4f5;
+    --surface: #fbfcfc;
+    --ink: #101619;
+    --muted: #5a686e;
+    --faint: #7f9096;
+    --line: #d9dfe1;
+    --rule: #c3cccf;
+    --accent: #0f7a82;
+    --accent-soft: #d7e9ea;
+    --ceiling: #c2453d;
+    --good: #2f6f4f;
+    --track: #e3e8e9;
+    --shadow: 0 1px 0 rgba(16,22,25,.04), 0 1px 3px rgba(16,22,25,.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0b1012;
+      --surface: #121a1d;
+      --ink: #e7eef0;
+      --muted: #93a4aa;
+      --faint: #74868c;
+      --line: #222e32;
+      --rule: #2c3b40;
+      --accent: #45b7c0;
+      --accent-soft: #17383b;
+      --ceiling: #e2695f;
+      --good: #58b487;
+      --track: #1b2528;
+      --shadow: none;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0b1012;
+    --surface: #121a1d;
+    --ink: #e7eef0;
+    --muted: #93a4aa;
+    --faint: #74868c;
+    --line: #222e32;
+    --rule: #2c3b40;
+    --accent: #45b7c0;
+    --accent-soft: #17383b;
+    --ceiling: #e2695f;
+    --good: #58b487;
+    --track: #1b2528;
+    --shadow: none;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: ui-serif, Charter, Georgia, "Times New Roman", serif;
+    font-size: 17px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .sheet { max-width: 61rem; margin: 0 auto; padding: 3.5rem 1.5rem 6rem; }
+  .col { max-width: 34rem; }
+
+  /* --- type roles ------------------------------------------------------ */
+  .label {
+    font-family: ui-sans-serif, -apple-system, "Helvetica Neue", Arial, sans-serif;
+    font-size: .688rem; font-weight: 650; letter-spacing: .13em;
+    text-transform: uppercase; color: var(--faint);
+  }
+  .num {
+    font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums; letter-spacing: -.01em;
+  }
+  h1 {
+    font-family: ui-sans-serif, -apple-system, "Helvetica Neue", Arial, sans-serif;
+    font-size: clamp(2rem, 5.2vw, 2.9rem); font-weight: 680; letter-spacing: -.028em;
+    line-height: 1.06; margin: .6rem 0 0; text-wrap: balance;
+  }
+  h2 {
+    font-family: ui-sans-serif, -apple-system, "Helvetica Neue", Arial, sans-serif;
+    font-size: 1.2rem; font-weight: 660; letter-spacing: -.014em;
+    margin: 0; text-wrap: balance;
+  }
+  h3 {
+    font-family: ui-sans-serif, -apple-system, "Helvetica Neue", Arial, sans-serif;
+    font-size: .95rem; font-weight: 640; letter-spacing: -.005em; margin: 0;
+  }
+  p { margin: 0; }
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px;
+  }
+
+  .lede { font-size: 1.12rem; color: var(--muted); margin-top: 1.1rem; }
+
+  /* --- masthead -------------------------------------------------------- */
+  header { border-bottom: 2px solid var(--ink); padding-bottom: 1.5rem; }
+  .provenance {
+    display: flex; flex-wrap: wrap; gap: .45rem 1.6rem;
+    margin-top: 1.6rem; padding-top: 1.1rem; border-top: 1px solid var(--line);
+  }
+  .provenance div { display: flex; gap: .5rem; align-items: baseline; }
+  .provenance .num { font-size: .8rem; color: var(--ink); }
+
+  /* --- sections -------------------------------------------------------- */
+  section { margin-top: 3.4rem; }
+  .sec-head {
+    display: flex; align-items: baseline; gap: .9rem;
+    border-bottom: 1px solid var(--rule); padding-bottom: .55rem; margin-bottom: 1.6rem;
+  }
+  .sec-head .label { white-space: nowrap; }
+  .stack { display: flex; flex-direction: column; gap: 1.15rem; }
+
+  /* --- instrument rows -------------------------------------------------- */
+  .rows { display: flex; flex-direction: column; gap: 1.5rem; }
+  .row { display: grid; grid-template-columns: 1fr; gap: .5rem; }
+  .row-top { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; }
+  .row-name { display: flex; flex-direction: column; gap: .1rem; }
+  .row-sub { font-size: .85rem; color: var(--muted); font-family: ui-sans-serif, -apple-system, sans-serif; }
+  .value { font-size: 1.6rem; font-weight: 500; color: var(--accent); white-space: nowrap; }
+  .value small { font-size: .8rem; color: var(--faint); font-weight: 400; margin-left: .3rem; }
+
+  /* bar with a hard ceiling marker */
+  .bar { position: relative; height: 10px; background: var(--track); border-radius: 1px; overflow: visible; }
+  .fill { position: absolute; inset: 0 auto 0 0; background: var(--accent); border-radius: 1px; }
+  .fill.is-past { background: var(--good); }
+  .fill.is-prev { background: var(--faint); }
+  .ceil { position: absolute; top: -5px; bottom: -5px; width: 2px; background: var(--ceiling); }
+  .ceil::after {
+    content: attr(data-note);
+    position: absolute; top: -1.25rem; left: 50%; transform: translateX(-50%);
+    font-family: ui-sans-serif, -apple-system, sans-serif;
+    font-size: .625rem; font-weight: 650; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--ceiling); white-space: nowrap;
+  }
+  .scale { display: flex; justify-content: space-between; font-size: .7rem; color: var(--faint); }
+
+  /* --- tables ----------------------------------------------------------- */
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: .875rem; }
+  th, td { text-align: right; padding: .6rem .7rem; border-bottom: 1px solid var(--line); }
+  th:first-child, td:first-child { text-align: left; }
+  thead th {
+    font-family: ui-sans-serif, -apple-system, sans-serif;
+    font-size: .688rem; font-weight: 650; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--faint); border-bottom: 1px solid var(--rule);
+  }
+  tbody td:not(:first-child) {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-variant-numeric: tabular-nums;
+  }
+  tbody td:first-child { font-family: ui-sans-serif, -apple-system, sans-serif; }
+  tr.is-ceiling td { color: var(--ceiling); }
+  tr.is-current td { font-weight: 600; }
+  tr.is-current td:first-child { box-shadow: inset 3px 0 0 var(--accent); padding-left: 1rem; }
+
+  /* --- notes ------------------------------------------------------------ */
+  .note {
+    background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--accent);
+    padding: 1.05rem 1.2rem; box-shadow: var(--shadow);
+    display: flex; flex-direction: column; gap: .5rem;
+  }
+  .note.is-caution { border-left-color: var(--ceiling); }
+  .note p { font-size: .94rem; }
+  .note .label { color: var(--muted); }
+
+  ul { margin: 0; padding-left: 1.1rem; display: flex; flex-direction: column; gap: .55rem; }
+  li::marker { color: var(--faint); }
+
+  code {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .86em;
+    background: var(--accent-soft); color: var(--ink);
+    padding: .1em .35em; border-radius: 2px;
+  }
+  .cmd {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .84rem;
+    background: var(--surface); border: 1px solid var(--line);
+    padding: .8rem 1rem; overflow-x: auto; color: var(--ink);
+  }
+
+  footer {
+    margin-top: 4rem; padding-top: 1.3rem; border-top: 1px solid var(--rule);
+    font-size: .85rem; color: var(--muted);
+    display: flex; flex-direction: column; gap: .6rem;
+  }
+
+  @media (max-width: 640px) {
+    .sheet { padding: 2.5rem 1.15rem 4rem; }
+    .value { font-size: 1.35rem; }
+    .row-top { flex-direction: column; gap: .25rem; }
+  }
+</style>
+
+<div class="sheet">
+
+  <header>
+    <div class="label">Measured spec sheet &middot; regenerated, not transcribed</div>
+    <h1>Local Hindi voice agent, on one laptop</h1>
+    <p class="lede col">
+      Speech in, reasoning with tools, speech out — entirely on device, with every
+      dependency under a permissive licence. Every figure below was measured by
+      running <code>voiceagent.eval.specsheet</code> on the machine described, and
+      the page is regenerated from its output rather than typed.
+    </p>
+    <div class="provenance">
+      <div><span class="label">Host</span><span class="num">Apple silicon, 12 cores, 18.0 GiB</span></div>
+      <div><span class="label">Free</span><span class="num">6.46 GiB</span></div>
+      <div><span class="label">Load</span><span class="num">0.25 / core</span></div>
+      <div><span class="label">Calibration</span><span class="num">19.4 ms</span></div>
+    </div>
+  </header>
+
+  <section>
+    <div class="sec-head">
+      <h2>Speech, both directions</h2>
+      <span class="label">Hindi</span>
+    </div>
+    <div class="rows">
+
+      <div class="row">
+        <div class="row-top">
+          <div class="row-name">
+            <h3>Synthesis</h3>
+            <span class="row-sub">Chatterbox Multilingual v3, 8-bit &middot; 1.33 GiB resident</span>
+          </div>
+          <div class="value num">0.70<small>RTF median</small></div>
+        </div>
+        <div class="bar" role="img" aria-label="Real-time factor 0.70 median, 0.95 worst case, against a real-time limit of 1.0">
+          <div class="fill" style="width:70%"></div>
+          <div class="ceil" style="left:100%" data-note="real time"></div>
+        </div>
+        <div class="scale"><span class="num">0.0</span><span class="num">worst case 0.95</span><span class="num">1.0</span></div>
+      </div>
+
+      <div class="row">
+        <div class="row-top">
+          <div class="row-name">
+            <h3>Recognition</h3>
+            <span class="row-sub">whisper-large-v3-turbo, pinned Hindi &middot; 2.31 GiB resident</span>
+          </div>
+          <div class="value num">0.16<small>RTF median</small></div>
+        </div>
+        <div class="bar" role="img" aria-label="Real-time factor 0.16 against a real-time limit of 1.0">
+          <div class="fill" style="width:16%"></div>
+          <div class="ceil" style="left:100%" data-note="real time"></div>
+        </div>
+        <div class="scale"><span class="num">0.0</span><span class="num">CER 9.2 % on the held-out set</span><span class="num">1.0</span></div>
+      </div>
+
+    </div>
+
+    <div class="note" style="margin-top:1.9rem">
+      <span class="label">Why 9.2 % and not 4.8 %</span>
+      <p>
+        Ordinary Hindi transcribes at 4.8 % character error. The 9.2 % above is on
+        the held-out set, which was built to be hard on purpose: mid-sentence
+        code-switching, digits, retroflex clusters and nuqta consonants — the
+        things chosen because they break systems. Both numbers are real; only one
+        of them is a fair thing to quote at you.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>Intelligibility, against the ceiling</h2>
+      <span class="label">12 held-out sentences</span>
+    </div>
+
+    <p class="col" style="color:var(--muted); margin-bottom:1.7rem">
+      Synthesis is scored by transcribing it back and comparing. The first row is
+      the reason this section exists: a flawless recording <em>by the speaker</em>
+      scores 90.2 %, not 100 %, because the scorer compares Whisper's spelling
+      against the transliterator's. That is the ceiling the metric can reach, and
+      every other row has to be read against it.
+    </p>
+
+    <div class="rows">
+      <div class="row">
+        <div class="row-top">
+          <div class="row-name">
+            <h3>Human recording</h3>
+            <span class="row-sub">The speaker, reading the same sentences</span>
+          </div>
+          <div class="value num" style="color:var(--ceiling)">90.2<small>%</small></div>
+        </div>
+        <div class="bar" role="img" aria-label="Human recording scores 90.2 percent, which is the metric ceiling">
+          <div class="fill" style="width:90.2%; background:var(--ceiling)"></div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="row-top">
+          <div class="row-name">
+            <h3>IndicF5</h3>
+            <span class="row-sub">The previous engine, replaced</span>
+          </div>
+          <div class="value num" style="color:var(--faint)">88.7<small>%</small></div>
+        </div>
+        <div class="bar" role="img" aria-label="IndicF5 scores 88.7 percent, below the 90.2 percent ceiling">
+          <div class="fill is-prev" style="width:88.7%"></div>
+          <div class="ceil" style="left:90.2%" data-note="ceiling"></div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="row-top">
+          <div class="row-name">
+            <h3>Chatterbox 8-bit</h3>
+            <span class="row-sub">Current engine</span>
+          </div>
+          <div class="value num" style="color:var(--good)">93.5<small>%</small></div>
+        </div>
+        <div class="bar" role="img" aria-label="Chatterbox 8-bit scores 93.5 percent, past the 90.2 percent ceiling">
+          <div class="fill is-past" style="width:93.5%"></div>
+          <div class="ceil" style="left:90.2%" data-note="ceiling"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="note is-caution" style="margin-top:2rem">
+      <span class="label">Read this before quoting 93.5 %</span>
+      <p>
+        The current engine scores <em>past</em> the human anchor. That does not
+        mean it sounds better than a person — it means the metric has stopped
+        discriminating and cannot tell us anything further. Intelligibility is not
+        naturalness. Nothing on this page measures prosody, and no listening study
+        has been run yet, so there is no quality verdict here to borrow.
+      </p>
+    </div>
+
+    <div class="scroll" style="margin-top:1.9rem">
+      <table>
+        <thead>
+          <tr><th>Condition</th><th>Mean</th><th>Worst sentence</th><th>Code-mixed</th></tr>
+        </thead>
+        <tbody>
+          <tr class="is-ceiling"><td>Human recording &mdash; metric ceiling</td><td>90.2 %</td><td>80.6 %</td><td>91.5 %</td></tr>
+          <tr><td>IndicF5 &mdash; previous</td><td>88.7 %</td><td>74.5 %</td><td>86.0 %</td></tr>
+          <tr class="is-current"><td>Chatterbox 8-bit &mdash; current</td><td>93.5 %</td><td>83.9 %</td><td>94.5 %</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>Licences</h2>
+      <span class="label">Enforced in code</span>
+    </div>
+    <div class="stack col">
+      <p>
+        Permissive only — Apache, MIT, BSD. <code>voice-doctor</code> exits
+        non-zero on a violation anywhere in the installed dependency tree, so this
+        is a build gate rather than a policy document. It has blocked real models,
+        and it is why the Hindi engine was replaced.
+      </p>
+    </div>
+    <div class="scroll" style="margin-top:1.4rem">
+      <table>
+        <thead><tr><th>Check</th><th>Result</th></tr></thead>
+        <tbody>
+          <tr><td>Model licence violations</td><td>0</td></tr>
+          <tr><td>Dependency tree violations</td><td>0</td></tr>
+          <tr><td>Recorded exceptions</td><td>1 &mdash; num2words, LGPL</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="note" style="margin-top:1.6rem">
+      <span class="label">The one exception, stated</span>
+      <p>
+        <code>num2words</code> is LGPL-2.1 and turns digits into words. The LGPL
+        permits commercial use of an unmodified library, but carries an obligation
+        the permissive set does not: recipients must be able to replace it.
+        Shipping it as an ordinary importable package satisfies that; freezing it
+        into one opaque binary would not — which is a live constraint on the
+        desktop build, not a footnote.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>What it does not do</h2>
+      <span class="label">Limits</span>
+    </div>
+    <div class="col">
+      <ul>
+        <li><strong>Hindi only, among Indian languages.</strong> The previous engine covered eleven; this one covers one. Other Indic scripts raise a named error rather than being spoken badly.</li>
+        <li><strong>Hindi needs an enrolled voice.</strong> The engine clones and has no built-in speaker, so Hindi is silent until a voice is enrolled with consent. No default speaker ships — it would be a real person's voice with no consent record attached.</li>
+        <li><strong>Listening is a choice.</strong> The loop hears English by default; Hindi input costs about 2.3 GiB against 228 MiB. On an 18 GiB machine that is a flag, not a default.</li>
+        <li><strong>No quality verdict.</strong> Intelligibility and latency are measured. Naturalness is not.</li>
+        <li><strong>Sub-second turns are not met.</strong> Roughly 1.8 s to first audio, warm.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>Reproduce it</h2>
+      <span class="label">One command</span>
+    </div>
+    <div class="stack col">
+      <p>
+        The sheet refuses to run on a busy machine. That gate exists because a
+        Hindi real-time factor was once measured at 6&ndash;12 and nearly
+        published; a virtual machine had the host at 44&times; load per core. The
+        same code reads 0.63 idle.
+      </p>
+      <div class="cmd">uv run python -m voiceagent.eval.specsheet</div>
+      <p style="font-size:.9rem; color:var(--muted)">
+        Add <code>--check</code> to test only whether the machine is quiet enough;
+        it exits non-zero when it is not.
+      </p>
+    </div>
+  </section>
+
+  <footer>
+    <div class="label">Provenance</div>
+    <p>
+      Generated from <code>eval_out/specsheet.json</code>. Load average is judged
+      per core, and swap is reported but never gated on — it does not drain after
+      the load is removed, so it describes the machine's history rather than its
+      present.
+    </p>
+  </footer>
+
+</div>
