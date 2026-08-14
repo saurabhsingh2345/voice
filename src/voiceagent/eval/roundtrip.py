@@ -110,15 +110,77 @@ def normalized(text: str, language: str | None) -> str:
     return normalize(text)
 
 
-def check(path: str | Path, expected: str, expect_language: str | None = None) -> bool:
-    heard, language = transcribe(path)
+#: Below this, Whisper's *language* label is not evidence and is ignored.
+#:
+#: Language identification reads a single window of audio, and a two-second clip
+#: does not contain enough of it. Measured: the held-out sentence
+#: "बिल्कुल, हो जाएगा।" (1.7 s) auto-detected as **Korean** and scored 0 %. The
+#: transcript it returned, 밀쿨 호자에가, romanises to "milkul hojaega" -- it is
+#: the target sentence, correctly synthesized, written in the wrong script by a
+#: detector with too little to go on. Re-decoded with Hindi pinned, the same file
+#: scores 88 %. It fired on 2 of 10 repeats, at temperature 0.6 and 0.3 alike.
+#:
+#: This is the Hindi/Urdu case in EQUIVALENT_LANGUAGES generalised: there the
+#: wrong script was a *predictable* alias and could be listed, here it can be any
+#: language at all, so it cannot. The threshold is set above the longest observed
+#: failure (2.02 s) with margin, and below the shortest clip that decoded
+#: correctly every time (2.74 s).
+#:
+#: WHAT THIS GIVES UP: for a clip this short, "Whisper heard a different
+#: language" stops being a failure signal, so genuine babble is no longer caught
+#: by the language check. Overlap still catches it --- pinning the decoder does
+#: not make nonsense score well, it only removes the script mismatch. Short
+#: utterances are therefore judged on overlap alone, which is the honest trade:
+#: the alternative was failing correct audio at 0 %.
+SHORT_CLIP_SECONDS = 2.5
 
-    accepted = EQUIVALENT_LANGUAGES.get(expect_language or "", frozenset())
-    if expect_language and language in accepted and language != expect_language:
-        # Same language, other script. Re-decode pinned so the comparison is
-        # script-for-script rather than scoring Devanagari against Perso-Arabic.
+
+def clip_seconds(path: str | Path) -> float:
+    info = sf.info(str(path))
+    return info.frames / info.samplerate if info.samplerate else 0.0
+
+
+def decode_for_scoring(
+    path: str | Path, expect_language: str | None = None
+) -> tuple[str, str, str | None]:
+    """Transcribe, re-decoding pinned when auto-detect cannot be trusted.
+
+    Returns `(heard, language, note)`. `note` is None when auto-detect stood, and
+    otherwise says why it was overridden --- callers should surface it, because a
+    silently re-pinned decode looks like a clean pass.
+
+    One function rather than two, deliberately. `check` and `eval.hindi_tts` each
+    grew their own copy of the alias handling and they had already diverged:
+    hindi_tts accepted `("ur", "pa")` while EQUIVALENT_LANGUAGES listed only
+    `ur`, so the same file could pass one harness and fail the other. The project
+    has been bitten by exactly this before, with the memory guard.
+    """
+    heard, language = transcribe(path)
+    if not expect_language or language == expect_language:
+        return heard, language, None
+
+    accepted = EQUIVALENT_LANGUAGES.get(expect_language, frozenset())
+    if language in accepted:
+        # Same spoken language, other script. Re-decode pinned so the comparison
+        # is script-for-script rather than Devanagari against Perso-Arabic.
         heard, _ = transcribe(path, language=expect_language)
-        language = expect_language
+        return heard, expect_language, f"re-decoded: {language!r} is the same language"
+
+    seconds = clip_seconds(path)
+    if seconds and seconds < SHORT_CLIP_SECONDS:
+        heard, _ = transcribe(path, language=expect_language)
+        return (
+            heard,
+            expect_language,
+            f"re-decoded: {seconds:.1f}s is too short to identify a language "
+            f"(detected {language!r}); scored on overlap alone",
+        )
+
+    return heard, language, None
+
+
+def check(path: str | Path, expected: str, expect_language: str | None = None) -> bool:
+    heard, language, note = decode_for_scoring(path, expect_language)
 
     scored_expected = normalized(expected, expect_language)
     scored_heard = normalized(heard, expect_language)
@@ -131,6 +193,8 @@ def check(path: str | Path, expected: str, expect_language: str | None = None) -
         print(f"compared : {scored_expected}")
         print(f"       vs : {scored_heard}")
     print(f"language : {language}" + (f" (expected {expect_language})" if expect_language else ""))
+    if note:
+        print(f"note     : {note}")
     print(f"overlap  : {overlap:.0%}")
 
     ok = overlap >= 0.5 and (expect_language is None or language == expect_language)

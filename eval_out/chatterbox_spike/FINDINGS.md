@@ -62,10 +62,17 @@ identical to IndicF5 on h8. This is the Hindi/Urdu bug already documented in
 `EQUIVALENT_LANGUAGES`, in a new script. Across 10 repeats of h8 it fired twice,
 at both temperature 0.6 and 0.3.
 
-*Fix:* re-decode pinned whenever the clip is under ~2.5 s, or whenever
-auto-detect returns a language the text's script cannot produce. Otherwise the
-harness will keep scoring short utterances at 0 % and blaming the engine.
-The table above uses the pinned 88 % for h8.
+*Fixed.* `roundtrip.decode_for_scoring` re-decodes pinned below
+`SHORT_CLIP_SECONDS` (2.5 s), which sits between the longest observed failure
+(2.02 s) and the shortest clip that decoded correctly on all five repeats
+(2.74 s). Verified against these files: h8 goes 0 % -> 88 %, the one genuinely
+slurred repeat still fails at 69 %, and long clips are untouched. The trade is
+stated in the constant's docstring --- for a clip that short the language label
+stops being a failure signal, so overlap alone judges it.
+
+`eval/hindi_tts.py` had grown its own copy of the alias handling and the two had
+diverged (it accepted `("ur", "pa")`; `EQUIVALENT_LANGUAGES` listed only `ur`),
+so both now call the one function. The table above uses the pinned 88 % for h8.
 
 **3. Keep `translit_en`.** Chatterbox's multilingual tokenizer handles raw Latin
 better than IndicF5 did, but transliterating first is still equal or better:

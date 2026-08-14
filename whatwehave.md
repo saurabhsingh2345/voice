@@ -84,9 +84,11 @@ Chatterbox rather than IndicF5 (Phase 12 — licence tree, and it measured bette
 - Synthetic voice runs ~19 % faster than the speaker (0.81 ratio). The old 0.75
   figure was an f5-tts duration artifact and did **not** transfer; Chatterbox
   exposes no speed control, so there is no knob to correct it with.
-- Round-trip scorer mislabels clips under ~2 s (a 1.7 s Hindi clip auto-detected
-  as Korean, 0 %; pinned to `hi`, 88 %). Same class as the documented Urdu case.
-  Needs a pinned re-decode guard before round trip is trusted as a gate.
+- Round-trip scoring ignores the *language label* below 2.5 s and judges on
+  overlap alone. Whisper mislabelled a 1.7 s Hindi clip as Korean and scored it
+  0 %; pinned to `hi` the same file scores 88 %. Fixed in
+  `roundtrip.decode_for_scoring`, but it means genuine babble in a very short
+  utterance is now caught by overlap only.
 - Chatterbox generation is unseeded upstream; the engine seeds per call. Seeded
   T3 tokens are bit-identical, audio differs by ~1.2e-07 (Metal reduction order).
 - Round-trip intelligibility ceiling is ~90 %, not 100 % — Whisper's spelling
@@ -105,14 +107,12 @@ See `plan.md` for the strategy this now serves, and why it changed.
 
 **Next, in order**
 
-1. **Fix the short-clip scorer bug** — re-decode pinned under ~2.5 s. Cheap, and
-   everything else that uses round trip as a gate depends on it.
-2. **Fix the Qwen3 repetition loop** (~1 in 80). Fatal in a live demo, invisible
+1. **Fix the Qwen3 repetition loop** (~1 in 80). Fatal in a live demo, invisible
    to every quality metric.
-3. **Bilingual live loop.** RTF 1.24 is close; streaming/chunked synthesis, a
+2. **Bilingual live loop.** RTF 1.24 is close; streaming/chunked synthesis, a
    warm model and no per-turn reload should get Hindi under 1.0. A Hindi agent
    you can *talk to* is the product; type-and-listen is a demo of a component.
-4. **Self-contained desktop bundle** — replace `num2words` with a Hindi/English
+3. **Self-contained desktop bundle** — replace `num2words` with a Hindi/English
    number routine we own (needed for lakh/crore anyway) and drop the last
    recorded licence exception.
 
