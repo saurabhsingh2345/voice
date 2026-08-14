@@ -84,6 +84,10 @@ PUBLISHED_BT: dict[str, dict[str, float]] = {
     "Indic F5": {"codemixed": 812.54, "normalized": 849.75, "symbolic": 785.42},
 }
 
+#: What this project's engine is called in the output tables. Named rather than
+#: "ours" so a reader of a pasted table can tell what it was.
+OUR_SYSTEM = "Chatterbox Multilingual 8-bit (this repo)"
+
 Subset = Literal["codemixed", "symbolic", "normalized"]
 
 _DEVANAGARI = re.compile(r"[ऀ-ॿ]")
@@ -538,6 +542,111 @@ def _score(args: argparse.Namespace) -> int:
     return 0
 
 
+REFERENCE_WAV = Path("fixtures/hi/reference_lekha.wav")
+
+
+async def render_ours(sentences: list[tuple[str, str]]) -> list[dict]:
+    """Synthesize arena sentences with this project's engine and score them.
+
+    Same engine, same normalisation and same scorer the rest of the repo uses --
+    `ChatterboxIndicEngine` driven exactly as `eval.hindi_tts` drives it, so a
+    regression in engine construction shows up here too rather than being
+    papered over by a bespoke path.
+
+    Hindi has no built-in speaker: Chatterbox clones, so it is silent until a
+    reference voice is enrolled. That makes the enrolled clip part of the
+    result, and it is the single largest caveat on comparing our number to a
+    cloud system's -- they were not conditioned on one amateur recording of one
+    speaker, and we were.
+    """
+    import numpy as np
+    import soundfile as sf
+
+    from voiceagent.eval.roundtrip import character_overlap, decode_for_scoring, normalized
+    from voiceagent.text.normalize_hi import normalize as normalize_hi
+    from voiceagent.tts.chatterbox_indic import ChatterboxIndicEngine
+
+    out_dir = CACHE / "ours"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    reference, sample_rate = sf.read(str(REFERENCE_WAV), dtype="float32")
+    if reference.ndim > 1:
+        reference = reference.mean(axis=1)
+
+    engine = ChatterboxIndicEngine()
+    engine.set_reference(reference, REFERENCE_WAV.with_suffix(".txt").read_text().strip(), sample_rate)
+    engine.load()
+
+    rows: list[dict] = []
+    for index, (prompt_id, sentence) in enumerate(sentences, 1):
+        wav = out_dir / f"{prompt_id or index}.wav"
+        spoken = normalize_hi(sentence)
+        chunks = [c async for c in engine.synthesize(spoken)]
+        if not chunks:
+            rows.append({"prompt_id": prompt_id, "sentence": sentence, "error": "no audio"})
+            continue
+
+        samples = np.concatenate([c.samples for c in chunks])
+        sf.write(wav, samples, chunks[0].sample_rate)
+        seconds = len(samples) / chunks[0].sample_rate
+        latency_ms = chunks[0].latency_ms
+
+        heard, language, note = decode_for_scoring(wav, "hi")
+        rows.append(
+            {
+                "prompt_id": prompt_id,
+                "sentence": sentence,
+                "subset": classify_subset(sentence),
+                "system": OUR_SYSTEM,
+                "heard": heard,
+                "language": language,
+                "note": note,
+                "overlap": character_overlap(normalized(sentence, "hi"), normalized(heard, "hi")),
+                "rtf": (latency_ms / 1000) / seconds if latency_ms and seconds else None,
+                "wav": str(wav),
+            }
+        )
+        if index % 5 == 0:
+            print(f"  rendered {index}/{len(sentences)}", flush=True)
+            (CACHE / "ours.json").write_text(json.dumps(rows, ensure_ascii=False, indent=1))
+
+    (CACHE / "ours.json").write_text(json.dumps(rows, ensure_ascii=False, indent=1))
+    return rows
+
+
+def _render(args: argparse.Namespace) -> int:
+    import asyncio
+
+    if not REFERENCE_WAV.exists():
+        print(
+            f"missing {REFERENCE_WAV} -- Hindi needs an enrolled voice, and this "
+            "clip is untracked because it is a real person's recording.",
+            file=sys.stderr,
+        )
+        return 2
+
+    votes = cached_votes()
+    seen: dict[str, str] = {}
+    for v in votes:
+        if v.subset == args.subset and v.prompt_id not in seen:
+            seen[v.prompt_id] = v.sentence
+    chosen = list(seen.items())[: args.n]
+    if not chosen:
+        print(f"no {args.subset} sentences in the cache", file=sys.stderr)
+        return 1
+
+    rows = asyncio.run(render_ours(chosen))
+    scored = [r for r in rows if "overlap" in r]
+    if scored:
+        mean = sum(r["overlap"] for r in scored) / len(scored)
+        rtfs = [r["rtf"] for r in scored if r.get("rtf")]
+        print(f"\n{OUR_SYSTEM} on {len(scored)} {args.subset} arena sentences")
+        print(f"  mean round-trip overlap : {mean:.3f}")
+        if rtfs:
+            print(f"  median RTF              : {sorted(rtfs)[len(rtfs) // 2]:.2f}")
+    return 0
+
+
 def _report_votes(args: argparse.Namespace) -> int:
     votes = cached_votes(refresh=args.refresh, limit_shards=args.shards)
     if not votes:
@@ -587,6 +696,11 @@ def main(argv: list[str] | None = None) -> int:
     score.add_argument("-n", type=int, default=None, help="score only the first N clips")
     score.add_argument("--restart", action="store_true", help="ignore checkpointed scores")
     score.set_defaults(func=_score)
+
+    ours = sub.add_parser("ours", help="render arena sentences with this project's engine")
+    ours.add_argument("-n", type=int, default=40, help="how many sentences")
+    ours.add_argument("--subset", default="codemixed", help="which input condition")
+    ours.set_defaults(func=_render)
 
     args = parser.parse_args(argv)
     return args.func(args)
