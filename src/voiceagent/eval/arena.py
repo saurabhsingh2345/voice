@@ -200,6 +200,41 @@ SHARD_TIMEOUT_SECONDS = 120
 SHARD_ATTEMPTS = 4
 
 
+def _with_deadline(work, label: str) -> list[dict]:
+    """Run a blocking read on a worker thread, retrying if it stalls.
+
+    The thread cannot be killed and may linger on the dead connection. Accepted:
+    it holds one socket and no lock, and the process exits once the useful work
+    is done.
+    """
+    import concurrent.futures as futures
+
+    last: Exception | None = None
+    for attempt in range(1, SHARD_ATTEMPTS + 1):
+        pool = futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            return pool.submit(work).result(timeout=SHARD_TIMEOUT_SECONDS)
+        except futures.TimeoutError as exc:
+            last = exc
+            print(f"    stalled after {SHARD_TIMEOUT_SECONDS}s, retry {attempt}", flush=True)
+        except Exception as exc:  # transient 5xx / reset connection
+            last = exc
+            print(f"    {type(exc).__name__}, retry {attempt}", flush=True)
+        finally:
+            pool.shutdown(wait=False)
+
+    raise RuntimeError(f"{label} failed after {SHARD_ATTEMPTS} attempts") from last
+
+
+def _read_row_group(fs, pq, path: str, columns: list[str], seed: int) -> list[dict]:
+    def work() -> list[dict]:
+        parquet = pq.ParquetFile(fs.open(path, "rb"))
+        group = seed % parquet.metadata.num_row_groups
+        return parquet.read_row_group(group, columns=columns).to_pylist()
+
+    return _with_deadline(work, path)
+
+
 def _read_shard(fs, pq, path: str, columns: list[str]) -> list[dict]:
     """Read one shard's columns, retrying a stalled connection.
 
@@ -208,28 +243,9 @@ def _read_shard(fs, pq, path: str, columns: list[str]) -> list[dict]:
     connection, which is accepted: it holds one socket and no lock, and the
     process exits normally once the useful work is done.
     """
-    import concurrent.futures as futures
-
-    last: Exception | None = None
-    for attempt in range(1, SHARD_ATTEMPTS + 1):
-        pool = futures.ThreadPoolExecutor(max_workers=1)
-        try:
-            job = pool.submit(
-                lambda: pq.ParquetFile(fs.open(path, "rb")).read(columns=columns).to_pylist()
-            )
-            return job.result(timeout=SHARD_TIMEOUT_SECONDS)
-        except futures.TimeoutError as exc:
-            last = exc
-            print(f"    stalled after {SHARD_TIMEOUT_SECONDS}s, retry {attempt}", flush=True)
-        except Exception as exc:  # transient 5xx / reset connection
-            last = exc
-            print(f"    {type(exc).__name__}, retry {attempt}", flush=True)
-        finally:
-            # Do not wait: the point of the timeout is not to block on the
-            # thread we just gave up on.
-            pool.shutdown(wait=False)
-
-    raise RuntimeError(f"{path} failed after {SHARD_ATTEMPTS} attempts") from last
+    return _with_deadline(
+        lambda: pq.ParquetFile(fs.open(path, "rb")).read(columns=columns).to_pylist(), path
+    )
 
 
 def _ratings(blob: dict | None, side: str) -> dict[str, int]:
@@ -364,13 +380,19 @@ def harvest_clips(target: int, *, seed: int = 0) -> list[Clip]:
         "audio_a",
         "audio_b",
     ]
+    manifest = CACHE / "clips.json"
     clips: list[Clip] = []
     for shard_index, path in enumerate(_shard_paths()):
         if len(clips) >= target:
             break
-        parquet = pq.ParquetFile(fs.open(path, "rb"))
-        group = seed % parquet.metadata.num_row_groups
-        rows = parquet.read_row_group(group, columns=columns).to_pylist()
+        # Same 120s deadline as the vote fetch, for the same reason and after
+        # the same failure: this loop stalled at 562 of 600 clips on a socket
+        # that stayed ESTABLISHED and delivered nothing.
+        try:
+            rows = _read_row_group(fs, pq, path, columns, seed)
+        except RuntimeError as exc:
+            print(f"  shard {shard_index}: {exc}", flush=True)
+            continue
 
         for row in rows:
             for side in ("a", "b"):
@@ -391,10 +413,14 @@ def harvest_clips(target: int, *, seed: int = 0) -> list[Clip]:
                         wav=str(wav),
                     )
                 )
+        # After every shard, not at the end. The ratings live only in the
+        # parquet, so a manifest written once at the end means an interrupted
+        # harvest leaves 562 wavs on disk that are unusable -- audio with no
+        # human score attached to it is not a calibration set, and rebuilding it
+        # costs the whole download again.
+        manifest.write_text(json.dumps([asdict(c) for c in clips], ensure_ascii=False, indent=1))
         print(f"  shard {shard_index}: {len(clips)} clips", flush=True)
 
-    manifest = CACHE / "clips.json"
-    manifest.write_text(json.dumps([asdict(c) for c in clips], ensure_ascii=False, indent=1))
     return clips
 
 
