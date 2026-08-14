@@ -4,7 +4,7 @@
     uv run python -m voiceagent.eval.hindi_tts --register formal
     uv run python -m voiceagent.eval.hindi_tts --limit 2
 
-Drives the real `IndicTTSEngine` -- not a hand-built model -- so it catches a
+Drives the real `ChatterboxIndicEngine` -- not a hand-built model -- so it catches a
 regression in the engine's own construction, which is exactly where the babble
 bug lived. Each sentence is synthesized and then transcribed back with Whisper;
 a sentence passes only if the transcript overlaps the input and Whisper agrees
@@ -30,7 +30,7 @@ from rich.console import Console
 from rich.table import Table
 
 from voiceagent.eval import sentences as S
-from voiceagent.eval.roundtrip import character_overlap, transcribe
+from voiceagent.eval.roundtrip import character_overlap, decode_for_scoring
 from voiceagent.text.normalize_hi import normalize as normalize_hi
 
 console = Console()
@@ -54,7 +54,7 @@ REGISTERS = {
 
 
 async def run(register: str | None, limit: int | None) -> int:
-    from voiceagent.tts.indic_engine import IndicTTSEngine
+    from voiceagent.tts.chatterbox_indic import ChatterboxIndicEngine
 
     if not REF_WAV.exists():
         console.print(f"[red]missing reference clip:[/] {REF_WAV}")
@@ -69,15 +69,14 @@ async def run(register: str | None, limit: int | None) -> int:
     if audio.ndim > 1:
         audio = audio.mean(axis=1)
 
-    engine = IndicTTSEngine()
+    engine = ChatterboxIndicEngine()
     engine.set_reference(audio, REF_TXT.read_text().strip(), sr)
     if warning := engine.reference_health():
         console.print(f"[yellow]reference warning:[/] {warning}")
 
     console.print(f"loading {engine.repo} ...")
     engine.load()
-    console.print(f"loaded on [bold]{engine._device}[/] "
-                  f"({engine.resident_bytes / 2**30:.2f} GiB)\n")
+    console.print(f"loaded ({engine.resident_bytes / 2**30:.2f} GiB)\n")
 
     table = Table(title="Hindi TTS round-trip", title_justify="left", header_style="bold")
     table.add_column("")
@@ -114,13 +113,13 @@ async def run(register: str | None, limit: int | None) -> int:
         if rtf == rtf:  # not NaN
             rtfs.append(rtf)
 
-        heard, language = transcribe(out_path)
-        # Hindi and Urdu are one spoken language in two scripts, so Whisper can
-        # return correct Hindi as Perso-Arabic labelled "ur". Re-decode pinned
-        # rather than failing it -- see EQUIVALENT_LANGUAGES in roundtrip.py.
-        if language in ("ur", "pa") and language != "hi":
-            heard, _ = transcribe(out_path, language="hi")
-            language = "hi"
+        # Shared with `roundtrip.check` rather than reimplemented. This harness
+        # used to carry its own copy that accepted ("ur", "pa") while
+        # EQUIVALENT_LANGUAGES listed only "ur", so the same file could pass here
+        # and fail there. See decode_for_scoring for the short-clip case.
+        heard, language, note = decode_for_scoring(out_path, "hi")
+        if note:
+            console.print(f"[dim]{case.slug}: {note}[/]")
         # Score against the normalized text -- that is what was actually spoken
         # -- and normalize the transcript too, because Whisper applies *inverse*
         # text normalization: it writes spoken numerals back as digits. The TTS
@@ -150,8 +149,10 @@ async def run(register: str | None, limit: int | None) -> int:
     total = len(cases)
     if failures:
         console.print(f"\n[red]{failures}/{total} sentences are not intelligible Hindi.[/]")
-        console.print("If all of them failed, check pe_attn_head / text_mask_padding in "
-                      "tts/indic_engine.py -- see OLD_SEMANTICS there.")
+        console.print("If all of them failed, suspect the engine's construction "
+                      "before the sentences -- see tts/chatterbox_indic.py. If only "
+                      "the short ones failed, suspect the scorer instead: Whisper "
+                      "mislabels the language of clips under ~2s and returns 0%.")
     else:
         console.print(f"\n[green]all {total} sentences came back as intelligible Hindi[/] "
                       f"(>={PASS_OVERLAP:.0%} overlap)")

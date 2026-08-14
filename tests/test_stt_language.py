@@ -64,14 +64,17 @@ def test_indic_engine_has_no_forget_reference():
     a transcript raised AttributeError -- on precisely the path that the
     output-length fix depends on.
 
-    If IndicTTSEngine ever *gains* a per-profile cache, this test should fail and
-    the server should start invalidating it again. It is asserting that the two
-    engines have genuinely different contracts, not that the method is unwanted.
+    Still true after the Hindi path moved from IndicF5 to Chatterbox
+    Multilingual: the Indic engine keeps one reference at a time rather than a
+    per-profile cache, so there is nothing to invalidate. If it ever gains one,
+    this test should fail and the server should start invalidating it again. It
+    asserts that the two engines have genuinely different contracts, not that the
+    method is unwanted.
     """
-    from voiceagent.tts.indic_engine import IndicTTSEngine
+    from voiceagent.tts.chatterbox_indic import ChatterboxIndicEngine
     from voiceagent.voice_clone.engine import ChatterboxCloneEngine
 
-    assert not hasattr(IndicTTSEngine, "forget_reference")
+    assert not hasattr(ChatterboxIndicEngine, "forget_reference")
     assert hasattr(ChatterboxCloneEngine, "forget_reference")
 
 

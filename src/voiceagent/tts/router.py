@@ -120,6 +120,14 @@ def build_default_router(keep_resident: bool = False) -> TTSRouter:
     The Indic route is declared even when its weights are not present, so the
     routing decision is testable and the failure is a clear load error rather
     than silently speaking Hindi with an English voice.
+
+    The route still claims all ten Indic scripts even though the engine behind
+    it now speaks only Hindi. That is deliberate. Narrowing the route to `{"hi"}`
+    would send Bengali to `route_for`'s fallback, which is the first route ---
+    this one --- and it would be read aloud by a Hindi voice with nothing
+    logged. Claiming the script and raising `UnsupportedLanguage` from the
+    engine names the language in the error instead. See
+    `chatterbox_indic.ChatterboxIndicEngine._require_hindi`.
     """
     from voiceagent.text.normalize_hi import normalize as normalize_hi
 
@@ -129,21 +137,9 @@ def build_default_router(keep_resident: bool = False) -> TTSRouter:
         return KokoroEngine()
 
     def indic() -> TTSEngine:
-        """A service on another machine if one is configured, else local weights.
+        from voiceagent.tts.chatterbox_indic import ChatterboxIndicEngine
 
-        One switch for the whole application: with VOICEAGENT_TTS_URL set, the
-        Indic route stops competing with the English pipeline for this machine's
-        memory, and the eviction above stops firing (see `_activate`).
-        """
-        from voiceagent.tts.remote_engine import from_env
-
-        remote = from_env()
-        if remote is not None:
-            return remote
-
-        from voiceagent.tts.indic_engine import IndicTTSEngine
-
-        return IndicTTSEngine()
+        return ChatterboxIndicEngine()
 
     return TTSRouter(
         routes=[

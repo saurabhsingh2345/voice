@@ -223,11 +223,19 @@ def test_export_can_be_restricted_to_one_language(dataset, profile, tmp_path):
     assert count == 1
 
 
-def test_export_does_not_hand_out_the_stock_finetune_command(dataset, profile, tmp_path, monkeypatch):
-    """The stock f5-tts CLI builds the model with text_mask_padding=True and
-    pe_attn_head=null. IndicF5 needs False and 1, every tensor still loads with the
-    wrong values, so it does not error -- it spends hours unlearning the pretrained
-    weights. Printing that command in the product was worse than printing nothing."""
+def test_export_does_not_hand_out_a_finetune_command(dataset, profile, tmp_path, monkeypatch):
+    """This endpoint must not point at a training path that does not exist.
+
+    It used to guard against printing the *wrong* command: the stock f5-tts CLI
+    builds the model with text_mask_padding=True and pe_attn_head=null where
+    IndicF5 needs False and 1, every tensor still loads, so it did not error --
+    it spent hours unlearning the pretrained weights.
+
+    Now there is no right command either. Chatterbox Multilingual clones
+    zero-shot, so `voice-train-prep` and the whole f5-tts trainer are gone, and
+    a stale instruction would send someone to a missing entry point. The export
+    itself stays: a clean transcribed dataset is worth having on its own.
+    """
     from fastapi.testclient import TestClient
 
     from voiceagent.web import server as srv
@@ -240,9 +248,9 @@ def test_export_does_not_hand_out_the_stock_finetune_command(dataset, profile, t
         .post(f"/api/dataset/{profile.profile_id}/export", data={"language": ""})
         .json()["next_steps"]
     )
-    assert "voice-train-prep" in steps
-    assert "f5-tts_finetune-cli" not in steps, "the stock CLI cannot fine-tune IndicF5 correctly"
-    assert "prepare_csv_wavs" not in steps, "its output path depends on the tokenizer; prep prints it"
+    for dead in ("voice-train-prep", "f5-tts_finetune-cli", "prepare_csv_wavs", "f5_tts.train"):
+        assert dead not in steps, f"{dead} no longer exists"
+    assert "zero-shot" in steps, "say why there is nothing to train, not just nothing"
 
 
 # --- splitting a long take -------------------------------------------------

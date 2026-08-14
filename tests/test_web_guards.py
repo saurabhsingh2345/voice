@@ -191,9 +191,11 @@ def test_the_ui_download_path_no_longer_posts_to_speak():
 
 
 def test_memory_threshold_is_above_the_model_size():
-    """IndicF5 is ~1.4 GiB and needs headroom for activations on top; a
-    threshold below that would let the wedge happen again."""
-    assert srv.MIN_FREE_GIB_FOR_INDIC >= 2.0
+    """Chatterbox Multilingual measures 3.04 GiB after load and 5.09 GiB peak
+    during generation, and needs headroom for activations on top; a threshold
+    below that would let the wedge happen again. Raised from 2.0 when the Hindi
+    path moved off IndicF5, whose checkpoint was less than half the size."""
+    assert srv.MIN_FREE_GIB_FOR_INDIC >= 3.0
 
 
 def test_memory_requirement_scales_with_text_length():
@@ -210,8 +212,8 @@ def test_memory_requirement_scales_with_text_length():
 def test_an_ordinary_hindi_paragraph_needs_only_the_floor():
     """The bug this guards: a 200-character paragraph of short Hindi sentences was
     refused at 3.0 GiB, and a 350-character one at 4.0 GiB, on a machine with 3.7
-    GiB free -- because the requirement scaled on total length while synthesis had
-    moved to one f5-tts call per sentence. Nothing here needs more than the floor.
+    GiB free -- because the requirement scaled on total length while synthesis
+    had moved to one call per sentence. Nothing here needs more than the floor.
     """
     paragraph = (
         "आज मौसम बहुत सुहावना है। आसमान बिल्कुल साफ़ है। मैं आपकी मदद के लिए यहाँ हूँ। "
@@ -223,19 +225,26 @@ def test_an_ordinary_hindi_paragraph_needs_only_the_floor():
 
 def test_one_very_long_sentence_still_raises_the_requirement():
     """The guard must not become uniformly permissive -- a single long sentence is
-    one large f5-tts call and genuinely does need more headroom."""
+    one large call and genuinely does need more headroom."""
     long_sentence = "क " * 400 + "।"
     assert srv.required_free_gib(long_sentence) > srv.MIN_FREE_GIB_FOR_INDIC
 
 
-def test_the_web_server_and_the_service_share_one_guard():
-    """These were two copies that diverged within a day: the service was corrected
-    for per-sentence synthesis and the web server was not, so the same text was
-    refused locally at 4.0 GiB while the service would have run it at 2.5 GiB."""
-    from voiceagent.web import tts_service as service
+def test_the_memory_guard_has_exactly_one_definition():
+    """These were two copies that diverged within a day: `web/tts_service.py` was
+    corrected for per-sentence synthesis and `web/server.py` was not, so the same
+    text was refused locally at 4.0 GiB while the service would have run it at
+    2.5 GiB.
 
-    assert srv.required_free_gib is service._required_gib
-    assert srv.MIN_FREE_GIB_FOR_INDIC == service.MIN_FREE_GIB_FOR_INDIC
+    The service is gone -- it existed to keep f5-tts off this machine, and f5-tts
+    is gone too -- so the duplication cannot recur the same way. This now asserts
+    the weaker, still-useful property: the server does not define its own copy,
+    it re-exports the engine's.
+    """
+    from voiceagent.tts import chatterbox_indic
+
+    assert srv.required_free_gib is chatterbox_indic.required_free_gib
+    assert srv.MIN_FREE_GIB_FOR_INDIC == chatterbox_indic.MIN_FREE_GIB
 
 
 def test_swap_percentage_is_not_used_as_a_guard():
@@ -246,41 +255,36 @@ def test_swap_percentage_is_not_used_as_a_guard():
     assert not hasattr(srv, "MAX_SWAP_FRACTION")
 
 
-# --- fine-tuned weights are selected per voice ----------------------------
+# --- there are no longer per-voice weights --------------------------------
 
 
-def test_a_voice_with_no_finetune_gets_stock_weights(tmp_path, monkeypatch):
-    monkeypatch.setattr(srv.dataset, "root", tmp_path / "voices")
-    assert srv.indic_checkpoint_for("never-trained") is None
+def test_there_is_no_per_voice_checkpoint_lookup():
+    """IndicF5 was fine-tunable per voice, so the server looked up
+    `data/f5tts_ckpts/<profile>/model_last.pt` and reloaded the engine whenever
+    the resident weights belonged to a different speaker -- a ~15 s cost every
+    time a caller alternated between a trained voice and a stock one.
+
+    Chatterbox Multilingual clones zero-shot from the reference clip: one
+    checkpoint serves every voice. The lookup, the reload and the whole
+    `f5tts_ckpts` directory convention are gone. If a per-voice checkpoint ever
+    comes back, this test should fail and `_ensure_indic` needs its eviction
+    logic back with it.
+    """
+    assert not hasattr(srv, "indic_checkpoint_for")
+    assert not hasattr(srv, "_indic_checkpoint")
 
 
-def test_a_voice_with_a_finetune_gets_its_own_weights(tmp_path, monkeypatch):
-    """Looked up by profile id rather than configured globally: enrol two voices,
-    train one, and the trained one should use its own weights without anybody
-    selecting anything."""
-    monkeypatch.setattr(srv.dataset, "root", tmp_path / "voices")
-    ckpt = tmp_path / "f5tts_ckpts" / "trained" / "model_last.pt"
-    ckpt.parent.mkdir(parents=True)
-    ckpt.write_bytes(b"weights")
-    assert srv.indic_checkpoint_for("trained") == ckpt
+def test_the_response_still_declares_which_engine_answered():
+    """X-Weights used to distinguish a fine-tuned generation from a stock one,
+    which mattered because the whole point of training was that they differ.
+    There is nothing to distinguish now, so it reports "stock" unconditionally
+    -- kept rather than dropped so existing clients do not see the header vanish.
 
-
-def test_model_last_is_preferred_over_numbered_checkpoints(tmp_path, monkeypatch):
-    """The trainer writes model_last.pt every `last_per_updates`, so it is the most
-    recent state; a numbered checkpoint can be hundreds of updates behind."""
-    monkeypatch.setattr(srv.dataset, "root", tmp_path / "voices")
-    d = tmp_path / "f5tts_ckpts" / "trained"
-    d.mkdir(parents=True)
-    (d / "model_200.pt").write_bytes(b"old")
-    (d / "model_last.pt").write_bytes(b"new")
-    assert srv.indic_checkpoint_for("trained").name == "model_last.pt"
-
-
-def test_the_response_says_which_weights_answered():
-    """Without this there is no way to tell a fine-tuned generation from a stock one
-    by listening, and the whole point of training is that they differ."""
+    X-Engine is the header that still carries information, and it has to name
+    the right one of the two Chatterbox checkpoints.
+    """
     import inspect
 
     source = inspect.getsource(srv.speak)
     assert '"X-Weights"' in source
-    assert "fine-tuned" in source and "stock" in source
+    assert "chatterbox-multilingual" in source and "chatterbox-turbo" in source

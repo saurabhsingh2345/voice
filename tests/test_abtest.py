@@ -163,6 +163,96 @@ def test_rushed_ratings_are_dropped_and_counted(samples):
     assert both["systems"][item.system]["n"] == 2
 
 
+def test_the_listen_threshold_is_the_clip_not_a_flat_floor(tmp_path):
+    """The first real run was rated by someone answering 8.4 s clips in 2.4 s, and a
+    flat 1.2 s floor passed all of it. `ms` runs from first play to answer, so a
+    rating shorter than the clip is proof it was not heard out."""
+    long_clip = {"ours": {"h1": wav(tmp_path / "src" / "long.wav", seconds=8.4)}}
+    bench = abtest.build(long_clip)
+    item = next(i for i in bench.items if i.kind == abtest.NATURALNESS)
+    assert bench.min_listen_ms(item.item_id) == pytest.approx(8400, abs=50)
+
+    bench.record("clicker", item.item_id, {"score": 5, "ms": 2400})
+    out = bench.results(abtest.NATURALNESS)
+    assert out["rushed_dropped"] == 1
+    assert out["systems"] == {}, "nothing survived, so there is nothing to report"
+
+
+def test_short_clips_still_get_the_floor(samples):
+    """A one-second clip does not make a 300 ms answer credible."""
+    bench = abtest.build(samples)
+    item = next(i for i in bench.items if i.kind == abtest.NATURALNESS)
+    assert bench.min_listen_ms(item.item_id) == abtest.MIN_LISTEN_MS
+
+
+def test_duration_is_read_off_disk_for_older_benchmarks(tmp_path):
+    """Benchmarks built before `duration_s` existed still have their audio, so the
+    check applies to them rather than silently falling back to the floor."""
+    bench = abtest.build({"ours": {"h1": wav(tmp_path / "src" / "long.wav", seconds=8.4)}})
+    stripped = json.loads((bench.dir / "manifest.json").read_text())
+    for entry in stripped["items"]:
+        entry.pop("duration_s")
+    (bench.dir / "manifest.json").write_text(json.dumps(stripped))
+
+    reloaded = abtest.Benchmark.load(bench.benchmark_id)
+    assert reloaded.items[0].duration_s == 0.0
+    assert reloaded.min_listen_ms(reloaded.items[0].item_id) == pytest.approx(8400, abs=50)
+
+
+# --- the content confound --------------------------------------------------
+
+
+def test_identity_is_uninterpretable_when_the_real_clips_are_other_sentences(tmp_path):
+    """`build_benchmark` falls back to training clips when the speaker has not read
+    the held-out set, and the first real run went out that way: real was four
+    spontaneous 8.4 s clips, ours four read sentences of 3.5-7.1 s. A listener can
+    sort that by content and length without hearing a voice, so the fooled rate is
+    not a voice measurement. The warning used to be a printed line at build time
+    that scrolled away; it now travels with the score."""
+    mismatched = {
+        "ours": {s: wav(tmp_path / "src" / f"o_{s}.wav") for s in ("h1", "h2")},
+        "real": {s: wav(tmp_path / "src" / f"r_{s}.wav") for s in ("r1", "r2")},
+    }
+    bench = abtest.build(mismatched)
+    for item in [i for i in bench.items if i.kind == abtest.IDENTITY]:
+        bench.record("listener", item.item_id, {"called_real": item.is_real, "ms": 4000})
+
+    out = bench.results(abtest.IDENTITY)
+    assert out["systems"]["ours"]["content_matched"] is False
+    assert out["verdict_supported"] is False
+    assert "different sentences" in out["note"]
+
+
+def test_a_content_matched_condition_stays_interpretable_alongside_a_broken_one(tmp_path):
+    """The vocoder control shares its sentences with the real condition even when the
+    model does not, so its result survives a rebuild that the model's does not. Per
+    system, not per benchmark — otherwise one bad condition discards a good one."""
+    mixed = {
+        "real": {s: wav(tmp_path / "src" / f"r_{s}.wav") for s in ("r1", "r2")},
+        "vocoded": {s: wav(tmp_path / "src" / f"v_{s}.wav") for s in ("r1", "r2")},
+        "ours": {s: wav(tmp_path / "src" / f"o_{s}.wav") for s in ("h1", "h2")},
+    }
+    bench = abtest.build(mixed)
+    for item in [i for i in bench.items if i.kind == abtest.IDENTITY]:
+        bench.record("listener", item.item_id, {"called_real": True, "ms": 4000})
+
+    out = bench.results(abtest.IDENTITY)
+    assert out["systems"]["vocoded"]["content_matched"] is True
+    assert out["systems"]["ours"]["content_matched"] is False
+    assert out["note"] and "ours" in out["note"] and "vocoded" not in out["note"]
+
+
+def test_matched_sentences_do_not_trip_the_warning(samples):
+    bench = abtest.build(samples)
+    for item in [i for i in bench.items if i.kind == abtest.IDENTITY]:
+        for listener in range(abtest.MIN_RATINGS_FOR_A_VERDICT):
+            bench.record(f"l{listener}", item.item_id, {"called_real": True, "ms": 4000})
+    out = bench.results(abtest.IDENTITY)
+    assert all(s["content_matched"] for s in out["systems"].values())
+    assert out["verdict_supported"] is True
+    assert out["note"] is None
+
+
 def test_a_thin_sample_refuses_to_call_a_winner(samples):
     """The project has already been burned by trusting a measurement. Three ratings
     must not read the same as three hundred."""

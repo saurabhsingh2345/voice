@@ -24,14 +24,14 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from voiceagent.text.detect import detect
 from voiceagent.text.normalize_hi import normalize as normalize_hi
-from voiceagent.tts.indic_engine import (
+from voiceagent.tts.chatterbox_indic import (
+    UnsupportedLanguage,
     CHARS_PER_BATCH,
     concat_with_crossfade,
     GIB_PER_EXTRA_BATCH,
     MIN_FREE_GIB,
     required_free_gib,
 )
-from voiceagent.tts.remote_engine import RemoteTTSUnavailable
 from voiceagent.voice_clone.dataset import (
     MAX_CLIP_SECONDS,
     MAX_SEGMENT_SECONDS,
@@ -60,11 +60,12 @@ engine = ChatterboxCloneEngine(store=store)
 #: paths reach them. See voice_clone.dataset.
 dataset = VoiceDataset(profiles=store)
 
-#: Chatterbox is English-only, so Devanagari sent to it produces nothing usable.
-#: Indic text goes to IndicF5, which clones from the same reference clip -- so
-#: one enrolment gives the user their voice in both languages. Only one of the
-#: two is held in memory at a time; together they would not fit alongside the
-#: rest of the pipeline.
+#: Chatterbox *Turbo* -- the cloning engine below -- is English-only, so
+#: Devanagari sent to it produces nothing usable. Hindi goes to Chatterbox
+#: *Multilingual*, a separate checkpoint that clones from the same reference
+#: clip, so one enrolment still gives the user their voice in both languages.
+#: Only one of the two is held in memory at a time; together they would not fit
+#: alongside the rest of the pipeline.
 _indic_engine = None
 _indic_lock = asyncio.Lock()
 
@@ -109,10 +110,10 @@ _synth_started_at: float | None = None
 #: that a stray paste of a whole document still gets a clear answer.
 MAX_SPEAK_CHARS = 3000
 
-#: Re-exported under this module's historical names. The definitions and the
-#: reasoning now live in `tts.indic_engine`, beside the synthesis strategy they
-#: depend on -- this module used to own them, a copy was made in
-#: `web.tts_service`, and the two diverged within a day.
+#: Re-exported under this module's historical name. The definition and the
+#: reasoning live in `tts.chatterbox_indic`, beside the synthesis strategy they
+#: depend on -- this module used to own them, a copy was made in a second
+#: module, and the two diverged within a day.
 MIN_FREE_GIB_FOR_INDIC = MIN_FREE_GIB
 
 #: Deliberately NOT guarding on swap percentage, having tried it and been wrong.
@@ -143,71 +144,33 @@ async def _ensure_loaded() -> None:
             _loaded = True
 
 
-#: True once _ensure_indic has resolved to a service on another machine. Read by
-#: the memory guard in /api/speak, which would otherwise measure the wrong host.
-_indic_is_remote = False
-
-#: Which checkpoint the resident Indic engine was loaded from, so a request for a
-#: differently-trained voice can be detected rather than silently answered wrong.
-_indic_checkpoint: "Path | None" = None
-
-
-def indic_checkpoint_for(profile_id: str) -> "Path | None":
-    """The fine-tuned weights for this voice, if it has any.
-
-    A fine-tune belongs to the voice it was trained on, so it is looked up by
-    profile id rather than configured globally: enrol two voices, train one, and the
-    trained one should use its own weights without anybody selecting anything.
-    `model_last.pt` rather than the numbered checkpoints -- the trainer writes it
-    every `last_per_updates`, so it is the most recent state.
-    """
-    candidate = Path(dataset.root).parent / "f5tts_ckpts" / profile_id / "model_last.pt"
-    return candidate if candidate.exists() else None
-
-
 async def _ensure_indic(profile_id: str | None = None) -> "object":
-    """Get the Indic engine, local or remote.
+    """Get the Hindi engine, evicting the English one to make room.
 
-    Reloads when the requested voice needs different weights from the ones already
-    resident. That is the same eviction trade as everywhere else here -- one engine
-    fits, two do not -- and it costs a ~15 s load when alternating between a
-    fine-tuned voice and a stock one.
+    Much smaller than it was, and the deletions are the interesting part.
 
-    With VOICEAGENT_TTS_URL set, synthesis happens on another machine and this
-    one keeps Chatterbox resident -- the eviction below exists only because both
-    models cannot fit here at once, and that stops being true when one of them
-    is somewhere else. Removing it also removes Chatterbox's 30 s reload on the
-    next English request, which is the eviction's real cost.
+    **No per-profile checkpoint.** IndicF5 was fine-tunable per voice, so this
+    used to look up `data/f5tts_ckpts/<profile>/model_last.pt` and reload
+    whenever the resident weights belonged to a different voice --- a ~15 s cost
+    every time a caller alternated between a trained voice and a stock one.
+    Chatterbox clones zero-shot from the reference clip, so there is one
+    checkpoint for every voice and nothing to swap. `profile_id` is kept in the
+    signature because callers pass it and the reference clip is still per-profile.
+
+    **No remote branch.** The LAN service existed to keep `f5-tts` --- and its
+    CC-BY-NC dependency --- off this machine. With that gone there is nothing to
+    quarantine, and local synthesis is now RTF 1.24 rather than 3.40.
     """
-    global _indic_engine, _loaded, _indic_is_remote, _indic_checkpoint
-    from voiceagent.tts.indic_engine import IndicTTSEngine
-    from voiceagent.tts.remote_engine import from_env
-
-    wanted = indic_checkpoint_for(profile_id) if profile_id else None
+    global _indic_engine, _loaded
+    from voiceagent.tts.chatterbox_indic import ChatterboxIndicEngine
 
     async with _indic_lock:
-        # Wrong weights resident: unload before loading the right ones, rather than
-        # answering in a voice the caller did not ask for.
-        if _indic_engine is not None and not _indic_is_remote and wanted != _indic_checkpoint:
-            await asyncio.to_thread(_indic_engine.unload)
-            _indic_engine = None
-
         if _indic_engine is None:
-            remote = from_env()
-            if remote is not None:
-                # load() here is a health check, not a model load -- it fails
-                # fast and loudly if the other machine is asleep, rather than
-                # halfway through a request.
-                await asyncio.to_thread(remote.load)
-                _indic_engine = remote
-                _indic_is_remote = True
-            else:
-                if _loaded:
-                    engine.unload()
-                    _loaded = False
-                _indic_engine = IndicTTSEngine(checkpoint=wanted)
-                await asyncio.to_thread(_indic_engine.load)
-                _indic_checkpoint = wanted
+            if _loaded:
+                engine.unload()
+                _loaded = False
+            _indic_engine = ChatterboxIndicEngine()
+            await asyncio.to_thread(_indic_engine.load)
     return _indic_engine
 
 
@@ -376,7 +339,7 @@ async def update_voice(profile_id: str, reference_text: str = Form(...)) -> dict
         profile = store.set_reference_text(profile_id, reference_text)
     except KeyError as exc:
         raise HTTPException(404, str(exc)) from exc
-    # No cache to invalidate here: unlike the Chatterbox engine, IndicTTSEngine
+    # No cache to invalidate here: unlike the cloning engine, the Indic engine
     # holds no per-profile reference cache, and /api/speak re-reads the clip and
     # transcript from the store on every request. This used to call
     # _indic_engine.forget_reference(), a method that only exists on the
@@ -408,7 +371,7 @@ async def transcribe_reference(profile_id: str) -> dict:
     if audio.ndim > 1:
         audio = audio.mean(axis=1)
 
-    from voiceagent.tts.indic_engine import REFERENCE_CLIP_SECONDS
+    from voiceagent.tts.chatterbox_indic import REFERENCE_CLIP_SECONDS
 
     # Transcribe exactly the span the TTS will condition on, so the text and the
     # audio describe the same thing.
@@ -546,68 +509,42 @@ async def speak(
                 profile = store.get(profile_id)
                 if profile is None:
                     raise HTTPException(403, "no such consented voice profile")
-                if not profile.reference_text:
-                    raise HTTPException(
-                        400,
-                        "This voice has no reference transcript. IndicF5 needs to know "
-                        "what the reference clip says. Add a transcript for this voice "
-                        "and try again.",
-                    )
-
-                # A transcript in the wrong script means it does not describe the
-                # audio -- the usual cause is auto-transcribing Hindi speech with
-                # the English-only STT, which invents plausible English words. F5
-                # conditions on that text, so the output becomes babble rather than
-                # failing. Refuse instead of synthesizing nonsense.
-                ref_detect = detect(profile.reference_text)
-                if not ref_detect.is_indic:
-                    raise HTTPException(
-                        400,
-                        "The reference transcript for this voice is in Latin script, but "
-                        "you asked for Indic output. If the clip is spoken in Hindi, type "
-                        "the Devanagari transcript by hand -- Auto-transcribe uses an "
-                        "English-only model and will invent English words for Hindi audio, "
-                        "which makes the synthesis unintelligible. If the clip really is "
-                        "English, record a new one in Hindi for native results.",
-                    )
+                # Two guards used to stand here and both are gone with f5-tts.
+                #
+                # The first refused a voice with no reference transcript; the
+                # second refused one whose transcript was in Latin script. Both
+                # existed because f5-tts *conditioned on that text*: it set output
+                # duration from (generated chars / reference chars) x reference
+                # duration, so a missing transcript had no duration to work from
+                # and a wrong-script one -- usually Hindi audio auto-transcribed
+                # by the English-only STT into invented English words -- produced
+                # babble rather than an error.
+                #
+                # Chatterbox conditions on the reference *audio* alone. A missing
+                # or mismatched transcript can no longer affect synthesis, so
+                # refusing on it would block work that now succeeds. The
+                # transcript is still stored and still shown, because it belongs
+                # to the consent record.
 
                 # Refuse when the machine plainly cannot do it. Without this the
                 # request does not fail, it wedges: the model pages out to swap
                 # mid-inference and neither finishes nor errors. A message the user
                 # can act on beats a ten-minute hang.
-                #
-                # Skipped entirely when a remote service is configured, and the
-                # env var is read rather than `_indic_is_remote` so the answer
-                # does not depend on whether _ensure_indic has run yet. This
-                # guard measures *this* machine's memory; when the work happens
-                # elsewhere that number is not merely irrelevant, it is wrong in
-                # the dangerous direction -- it would refuse a request the
-                # service machine had ample room for. The far side runs the same
-                # guard against its own memory, and its 507 is passed through.
-                import os as _os
+                import psutil as _psutil
 
-                from voiceagent.tts.remote_engine import DEFAULT_URL_ENV
-
-                if not _os.environ.get(DEFAULT_URL_ENV, "").strip():
-                    import psutil as _psutil
-
-                    free_gib = _psutil.virtual_memory().available / 1024**3
-                    needed = required_free_gib(spoken)
-                    if free_gib < needed:
-                        raise HTTPException(
-                            507,
-                            f"Only {free_gib:.1f} GiB of memory is free, and the longest "
-                            f"sentence here needs roughly {needed:.1f} GiB. Close whatever is "
-                            "holding memory (a running VM, extra editor or browser windows), "
-                            "or break up the longest sentence -- total length is not the "
-                            "constraint, since each sentence is synthesized separately. "
-                            "Starting anyway risks the system killing this server mid-request "
-                            "rather than returning an error.\n\n"
-                            "If you meant this to run on the TTS service machine: this guard "
-                            "only runs when VOICEAGENT_TTS_URL is unset, so seeing this "
-                            "message means the variable did not reach this process. Export it "
-                            "and restart the server.",
-                        )
+                free_gib = _psutil.virtual_memory().available / 1024**3
+                needed = required_free_gib(spoken)
+                if free_gib < needed:
+                    raise HTTPException(
+                        507,
+                        f"Only {free_gib:.1f} GiB of memory is free, and the longest "
+                        f"sentence here needs roughly {needed:.1f} GiB. Close whatever is "
+                        "holding memory (a running VM, extra editor or browser windows), "
+                        "or break up the longest sentence -- total length is not the "
+                        "constraint, since each sentence is synthesized separately. "
+                        "Starting anyway risks the system killing this server mid-request "
+                        "rather than returning an error.",
+                    )
 
                 indic = await _ensure_indic(profile_id)
                 import io as _io
@@ -635,12 +572,11 @@ async def speak(
         raise
     except ConsentError as exc:
         raise HTTPException(403, str(exc)) from exc
-    except RemoteTTSUnavailable as exc:
-        # 502, not 500: the failure is the other machine's, and the message names
-        # it. Reported as-is because "is the Air awake and on this network" is
-        # something the user can check, and a generic 500 would send them looking
-        # in this process instead.
-        raise HTTPException(502, str(exc)) from exc
+    except UnsupportedLanguage as exc:
+        # 400, not 500: the request is the problem, and the message names the
+        # language. Chatterbox Multilingual speaks Hindi and no other Indic
+        # language; IndicF5 covered eleven. See tts/chatterbox_indic.py.
+        raise HTTPException(400, str(exc)) from exc
     finally:
         # Cleared unconditionally: a stale timestamp would make the next busy
         # message report a nonsense duration.
@@ -668,11 +604,12 @@ async def speak(
             "X-Realtime-Factor": f"{(elapsed_ms / 1000) / seconds:.2f}" if seconds else "0",
             "X-Audio-Format": ext,
             "X-Language": detection.language,
-            "X-Weights": ("fine-tuned" if _indic_checkpoint else "stock"),
+            # Always "stock": Chatterbox clones zero-shot, so there is no
+            # per-voice fine-tune to distinguish. Kept so the header contract
+            # does not change under existing clients.
+            "X-Weights": "stock",
             "X-Engine": (
-                ("indicf5-remote" if _indic_is_remote else "indicf5")
-                if detection.is_indic
-                else "chatterbox"
+                "chatterbox-multilingual" if detection.is_indic else "chatterbox-turbo"
             ),
             "X-Audio-Bytes": str(len(payload)),
             "Content-Disposition": f'inline; filename="speech.{ext}"',
@@ -938,20 +875,23 @@ async def export_dataset(profile_id: str, language: str = Form("")) -> dict:
         "plaintext_warning": (
             "This directory holds DECRYPTED audio. Delete it when training finishes."
         ),
-        # One command, deliberately. This used to print prepare_csv_wavs and
-        # f5-tts_finetune-cli directly, which was wrong in four ways at once:
-        # the stock CLI builds the model with text_mask_padding=True and
-        # pe_attn_head=null, IndicF5 needs False and 1; it defaults to the pinyin
-        # tokenizer instead of IndicF5's 2545-entry vocab; it cannot load a
-        # checkpoint whose keys read ema_model._orig_mod.*; and it writes both the
-        # dataset and the checkpoints inside .venv. The flag mismatch is the
-        # dangerous one -- every tensor still loads, so it does not error, it just
-        # spends hours unlearning the pretrained weights. voice-train-prep fixes
-        # all four and prints the two commands that follow it.
+        # There is no training command any more, and saying so is more useful
+        # than pointing at one that no longer exists.
+        #
+        # This used to print `voice-train-prep`, which fine-tuned IndicF5 through
+        # f5-tts's trainer. Both went when the Hindi path moved to Chatterbox
+        # Multilingual, which clones zero-shot from the reference clip: there is
+        # one checkpoint for every voice and nothing to train.
+        #
+        # The export itself is kept. A clean, transcribed, per-clip dataset is
+        # worth having regardless of what consumes it -- it is the asset a future
+        # adapter would need, and it is the thing that takes weeks to collect.
         "next_steps": [
-            f"uv run voice-train-prep {profile_id}",
-            "then run the two commands it prints",
-            f"rm -rf {destination}   # remove the decrypted copy when training finishes",
+            "Fine-tuning is no longer part of this project: Chatterbox clones "
+            "zero-shot from the enrolled reference clip, so a better clone comes "
+            "from a better reference recording, not from training.",
+            "This export is still worth keeping as a dataset in its own right.",
+            f"rm -rf {destination}   # remove the decrypted copy when you are done",
         ],
     }
 

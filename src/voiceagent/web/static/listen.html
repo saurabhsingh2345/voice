@@ -188,8 +188,9 @@ async function answer(body) {
   const form = new FormData();
   form.append("listener", listener);
   form.append("item_id", queue[at]);
-  // Time from first play to answer. The harness drops anything under 1.2s as a
-  // click-through, so this has to be measured rather than guessed.
+  // Time from first play to answer. The harness drops anything shorter than the
+  // clip itself as a click-through — answering before it ends means it was not
+  // heard out — so this has to be measured rather than guessed.
   form.append("ms", String(Date.now() - playedAt));
   for (const [k, v] of Object.entries(body)) form.append(k, String(v));
 

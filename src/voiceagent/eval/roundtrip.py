@@ -17,7 +17,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import numpy as np
 import soundfile as sf
 
 WHISPER_REPO = "mlx-community/whisper-large-v3-turbo"
@@ -32,12 +31,15 @@ def transcribe(path: str | Path, language: str | None = None) -> tuple[str, str]
     """
     import mlx_whisper
 
+    from voiceagent.eval.audio import resample
+
     audio, sr = sf.read(str(path), dtype="float32")
     if audio.ndim > 1:
         audio = audio.mean(axis=1)
-    if sr != 16_000:
-        idx = (np.arange(int(len(audio) * 16_000 / sr)) * sr / 16_000).astype(int)
-        audio = audio[idx[idx < len(audio)]]
+    # Band-limited, not index-dropping. This is the input to the only automated
+    # ground truth the project has, and dropping samples folded everything above
+    # 8 kHz back on top of the speech it was about to be judged on.
+    audio = resample(audio, sr, 16_000)
 
     result = mlx_whisper.transcribe(
         audio, path_or_hf_repo=WHISPER_REPO, fp16=True, verbose=None, language=language
@@ -81,21 +83,118 @@ EQUIVALENT_LANGUAGES: dict[str, frozenset[str]] = {
 }
 
 
-def check(path: str | Path, expected: str, expect_language: str | None = None) -> bool:
-    heard, language = transcribe(path)
+def normalized(text: str, language: str | None) -> str:
+    """Both sides of the comparison, in the script the model actually speaks.
 
-    accepted = EQUIVALENT_LANGUAGES.get(expect_language or "", frozenset())
-    if expect_language and language in accepted and language != expect_language:
-        # Same language, other script. Re-decode pinned so the comparison is
-        # script-for-script rather than scoring Devanagari against Perso-Arabic.
+    Without this the check scores its own text handling instead of the audio. Two
+    ways it goes wrong, and both are silent:
+
+      - Whisper writes loanwords in Devanagari. Expected text keeps them in Latin,
+        so "एक documentary देखी" is compared against "एक डॉक्यूमेंटरी देखी" and loses
+        every character of the English word. The engine transliterates before
+        synthesis, so Devanagari is the correct side to compare on.
+      - Whisper applies inverse text normalization, so a correct
+        "एक हज़ार दो सौ निन्यानवे" comes back as "1299".
+
+    Measured: a flawless human reading of the code-mixed held-out sentence scored
+    54 % raw. A human recording is intelligible by construction, which is what
+    identifies that number as the scorer's floor rather than the speaker's.
+
+    `hindi_tts` has always done this; `check` never did, and `check` is the one the
+    README tells you to reach for on a single file.
+    """
+    if language != "hi":
+        return text
+    from voiceagent.text.normalize_hi import normalize
+
+    return normalize(text)
+
+
+#: Below this, Whisper's *language* label is not evidence and is ignored.
+#:
+#: Language identification reads a single window of audio, and a two-second clip
+#: does not contain enough of it. Measured: the held-out sentence
+#: "बिल्कुल, हो जाएगा।" (1.7 s) auto-detected as **Korean** and scored 0 %. The
+#: transcript it returned, 밀쿨 호자에가, romanises to "milkul hojaega" -- it is
+#: the target sentence, correctly synthesized, written in the wrong script by a
+#: detector with too little to go on. Re-decoded with Hindi pinned, the same file
+#: scores 88 %. It fired on 2 of 10 repeats, at temperature 0.6 and 0.3 alike.
+#:
+#: This is the Hindi/Urdu case in EQUIVALENT_LANGUAGES generalised: there the
+#: wrong script was a *predictable* alias and could be listed, here it can be any
+#: language at all, so it cannot. The threshold is set above the longest observed
+#: failure (2.02 s) with margin, and below the shortest clip that decoded
+#: correctly every time (2.74 s).
+#:
+#: WHAT THIS GIVES UP: for a clip this short, "Whisper heard a different
+#: language" stops being a failure signal, so genuine babble is no longer caught
+#: by the language check. Overlap still catches it --- pinning the decoder does
+#: not make nonsense score well, it only removes the script mismatch. Short
+#: utterances are therefore judged on overlap alone, which is the honest trade:
+#: the alternative was failing correct audio at 0 %.
+SHORT_CLIP_SECONDS = 2.5
+
+
+def clip_seconds(path: str | Path) -> float:
+    info = sf.info(str(path))
+    return info.frames / info.samplerate if info.samplerate else 0.0
+
+
+def decode_for_scoring(
+    path: str | Path, expect_language: str | None = None
+) -> tuple[str, str, str | None]:
+    """Transcribe, re-decoding pinned when auto-detect cannot be trusted.
+
+    Returns `(heard, language, note)`. `note` is None when auto-detect stood, and
+    otherwise says why it was overridden --- callers should surface it, because a
+    silently re-pinned decode looks like a clean pass.
+
+    One function rather than two, deliberately. `check` and `eval.hindi_tts` each
+    grew their own copy of the alias handling and they had already diverged:
+    hindi_tts accepted `("ur", "pa")` while EQUIVALENT_LANGUAGES listed only
+    `ur`, so the same file could pass one harness and fail the other. The project
+    has been bitten by exactly this before, with the memory guard.
+    """
+    heard, language = transcribe(path)
+    if not expect_language or language == expect_language:
+        return heard, language, None
+
+    accepted = EQUIVALENT_LANGUAGES.get(expect_language, frozenset())
+    if language in accepted:
+        # Same spoken language, other script. Re-decode pinned so the comparison
+        # is script-for-script rather than Devanagari against Perso-Arabic.
         heard, _ = transcribe(path, language=expect_language)
-        language = expect_language
-    overlap = character_overlap(expected, heard)
+        return heard, expect_language, f"re-decoded: {language!r} is the same language"
+
+    seconds = clip_seconds(path)
+    if seconds and seconds < SHORT_CLIP_SECONDS:
+        heard, _ = transcribe(path, language=expect_language)
+        return (
+            heard,
+            expect_language,
+            f"re-decoded: {seconds:.1f}s is too short to identify a language "
+            f"(detected {language!r}); scored on overlap alone",
+        )
+
+    return heard, language, None
+
+
+def check(path: str | Path, expected: str, expect_language: str | None = None) -> bool:
+    heard, language, note = decode_for_scoring(path, expect_language)
+
+    scored_expected = normalized(expected, expect_language)
+    scored_heard = normalized(heard, expect_language)
+    overlap = character_overlap(scored_expected, scored_heard)
 
     print(f"file     : {path}")
     print(f"expected : {expected}")
     print(f"heard    : {heard}")
+    if scored_expected != expected or scored_heard != heard:
+        print(f"compared : {scored_expected}")
+        print(f"       vs : {scored_heard}")
     print(f"language : {language}" + (f" (expected {expect_language})" if expect_language else ""))
+    if note:
+        print(f"note     : {note}")
     print(f"overlap  : {overlap:.0%}")
 
     ok = overlap >= 0.5 and (expect_language is None or language == expect_language)

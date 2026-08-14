@@ -556,117 +556,6 @@ out), seen once in ~80 generations and not attributable to any prompt. Judging
 Hindi *quality* still needs a native speaker; these numbers only catch the
 failures that are mechanical.
 
-## Running Indic TTS on a second machine
-
-The memory ceiling is the constraint behind most decisions in this project, and
-`TTSRouter` schedules around it by evicting one engine to load another. A spare
-machine removes it instead. Here that is an 8 GiB M1 Air: it holds IndicF5
-loaded permanently and answers synthesis over the LAN, so this Mac keeps the
-live loop resident and never reloads Chatterbox after speaking Hindi.
-
-```bash
-# once, on either machine
-python -c "import secrets; print(secrets.token_urlsafe(32))"
-
-# on the Air (the service)
-uv sync --extra indic
-export VOICEAGENT_TTS_TOKEN='<token>'
-uv run voice-tts-service --host 0.0.0.0
-
-# on this Mac (the client)
-uv sync --all-extras                           # NOT --extra remote alone; see below
-export VOICEAGENT_TTS_TOKEN='<token>'          # the same one
-export VOICEAGENT_TTS_URL='http://192.168.1.42:8824'
-uv run voice-web
-```
-
-`uv sync --extra remote` **prunes to exactly that extra**, silently removing
-Chatterbox, Whisper, the VAD and mlx-lm — so English synthesis, auto-transcribe
-and `voice-chat` all break while the Hindi path keeps working, which is a
-confusing way to find out. Use `--extra remote` alone only on a machine whose job
-really is client-and-nothing-else; on a machine that also runs the loop, use
-`--all-extras`.
-
-Keeping `indic` installed here is a deliberate trade with a cost: local Hindi
-still works when the service machine is asleep, but the licence audit stays red
-here, so the green-audit benefit applies only to a build that genuinely omits the
-extra. The fallback is also slow on first use — it pays the 15-30 s model load
-the service exists to avoid.
-
-Both `voice-web` and `TTSRouter` pick this up from the environment; unset
-`VOICEAGENT_TTS_URL` and everything reverts to local weights.
-
-Measured end to end (client and service on one machine, so the network is
-loopback — see the caveats below):
-
-| | First audio | RTF | Round-trip |
-| --- | --- | --- | --- |
-| cold, model loading | 19.5 s | 10.59 | — |
-| **warm** | **8.4 s** | **4.58** | **95 %, INTELLIGIBLE** |
-
-The second request reported `loaded: true` and cost less than half the first,
-which is the property the whole arrangement is for: the reload stops happening.
-Audio came back at 95 % round-trip overlap in Hindi — identical to the best local
-result, so the wire path does not degrade it.
-
-### Why this is safe for IndicF5 and would be wrong for anything else
-
-Indic synthesis is RTF ~3.4. A LAN round trip is 1–5 ms and the reference clip is
-~0.5 MB, so the network is about 0.1 % of the request. Kokoro (RTF ~0.1, 280 ms
-to first audio) would be dominated by it, and the LLM would be worse still: any
-form of pipeline-sharding puts a network hop in the path of *every generated
-token*. Only move work that is already too slow to be interactive.
-
-### What this costs, stated plainly
-
-- **The privacy claim weakens.** The reference clip is decrypted here — the
-  Fernet key never leaves this Keychain — but the plaintext WAV then crosses the
-  LAN. "Nothing leaves this machine" becomes "nothing leaves my hardware". So
-  the transport is not left open: every request carries a shared token compared
-  with `compare_digest`, the service refuses to start without one, it binds to
-  loopback unless `--host` says otherwise, and the client refuses plain HTTP to
-  any address that is not private or loopback.
-- **The licence violation is isolated, not resolved.** `audit_installed_packages()`
-  walks the current venv, so a Mac that installs `remote` instead of `indic` has
-  no `encodec`, `Unidecode`, `frozendict` or `soxr` in its tree and
-  `voice-doctor` passes. That is a real gain — the packaged app stops depending
-  on a non-commercial package — but encodec is still CC-BY-NC wherever it runs.
-  Indic Parler-TTS remains the only actual fix.
-- **The numbers above are not two-machine numbers.** Both processes ran on this
-  M3 Pro under memory pressure (4.8 GiB free, 9.8 GiB swap), which is why RTF
-  4.58 is worse than the 3.40 baseline. An M1 Air is slower silicon than an M3
-  Pro, so expect its RTF to be worse than 3.40 too — what improves is that this
-  machine stops paying for it at all.
-- **`cancel()` does not interrupt the far side.** HTTP gives no way to stop
-  f5-tts mid-generation, so cancelling stops playback but not the remote
-  compute. This costs nothing today because Hindi is type-and-listen; there is
-  no live loop to barge in on.
-- **The service persists nothing.** The reference arrives with each request and
-  lives in memory for its duration. There is no voice cached under an
-  identifier, so there is nothing on that machine to leak or forget to delete.
-
-### The Indic crash mitigation was barely working
-
-Building this surfaced a bug that has nothing to do with networking.
-`SentenceChunker.TERMINALS` was `".!?"`, and Hindi ends sentences with `।`. So
-Devanagari text had no sentence boundaries at all: **20 Hindi sentences came out
-as 2 chunks** where the same 20 in English came out as 20.
-
-That is not a prosody problem. `IndicTTSEngine.synthesize` synthesizes one
-sentence per f5-tts call *specifically* to keep each call small, because a
-428-character narration segfaulted inside PyTorch's Metal backend. With nothing
-to cut on, Hindi text was handed over nearly whole and split by f5-tts's own
-internal batching — the exact path that crashed. The mitigation appeared to work
-only because the first-chunk rule happened to break the text in two.
-
-A second defect sat next to it: the run-on fallback searched the whole buffer
-from the end, so with no punctuation it cut at the *last* space rather than near
-the limit, emitting one 2359-character chunk against a 220 limit. Both searches
-are now bounded to `max_chars`, which makes the documented limit real. Chunk
-length sets peak allocation for one f5-tts call, so this is a memory decision as
-much as a prosodic one — the service sizes its memory guard on the longest
-sentence for exactly that reason.
-
 ## Phase 10 — fine-tuning the voice
 
 Zero-shot cloning has a ceiling: it transfers timbre from a 12-second prompt and
@@ -751,6 +640,240 @@ x-weights: fine-tuned      # or: stock
 Switching between a fine-tuned and a stock voice costs a ~15 s reload — one Indic
 model fits in memory, two do not.
 
+## Phase 11 — a blind listening test
+
+Phase 10 ended on "the speaker says it sounds like him." That is the right kind of
+evidence and the wrong amount of it: it is one unblinded opinion from the person
+with the strongest reason to hear a resemblance, and it cannot be checked by anyone
+else. The two numeric proxies had already contradicted him — F0 and spectral
+centroid ranked the sample he identified with *worst* — so the honest position was
+that voice quality was unmeasured.
+
+```bash
+uv run voice-web                                          # /record-benchmark, then /listen
+uv run python -m voiceagent.eval.build_benchmark <profile_id>
+```
+
+Two questions, deliberately separate, because they have different answers. A clone
+can be indistinguishable from its speaker while still being less natural Hindi than
+a competitor's stock voice, and one combined score would hide that.
+
+| | asks | reports |
+| --- | --- | --- |
+| identity | "is this a real recording, or synthesised?" | fooled rate, Wilson interval |
+| naturalness | "how natural is this Hindi, 1–5?" | mean opinion score |
+
+Four conditions, and the fourth is what makes the rest interpretable:
+
+| | |
+| --- | --- |
+| `real` | the speaker reading the held-out sentences (upper anchor) |
+| `vocoded` | those same recordings through the mel-and-vocoder path, nothing else |
+| `ours` | the fine-tune on those sentences |
+| `stock` | stock IndicF5 on those sentences (baseline) |
+
+Without the vocoder control, a listener can learn to spot the *channel* rather than
+the voice, and "they could tell" becomes uninterpretable. If `vocoded` is called
+synthetic too, the tell is the vocoder and no amount of fine-tuning fixes it; if
+`vocoded` passes as real and `ours` does not, the tell is ours and is fixable.
+
+Blinding is structural rather than policy: item ids are random, the mapping to
+systems lives in a manifest the listening UI never reads, and audio is copied under
+its opaque id. The natural implementation serves `ours_h1.wav` and leaks the answer
+in the URL bar.
+
+### The first run measured nothing, and finding that out was the point
+
+Two listeners rated 24 items. The result looked like a result — ours fooled 25 % of
+the time against 100 % for real. It was not one, and all three reasons are now
+fixed rather than remembered.
+
+**The real clips were different sentences.** `build_benchmark` falls back to
+training clips when the speaker has not read the held-out set, printed a warning,
+and scrolled it away. So `real` was four spontaneous 8.4 s clips and `ours` was four
+read sentences of 3.5–7.1 s: a listener could sort them by content and length
+without hearing a voice. The fallback now **refuses** unless `--allow-unmatched-real`
+is passed, and `results()` carries `content_matched` per system so the caveat
+travels with the score instead of living in someone's memory.
+
+**The attention filter passed people clicking through.** `ms` runs from first play
+to answer, so a rating shorter than the clip proves it was not heard out — but the
+threshold was a flat 1.2 s, and one rater answered 8.4 s clips in 2.4 s. Under the
+corrected rule, **13 of 24 identity ratings and 8 of 12 naturalness ratings were
+rushed**. Worse than losing them: because the conditions differed in length, the
+filter cut them unequally, leaving ours n=8 against real n=1 — a filter that
+selects on condition biases the comparison it is supposed to protect. Same
+sentences on both sides fixes this too, since it makes the durations comparable.
+
+**The vocoder control had audible aliasing, and only it.** Resampling 48 kHz to
+24 kHz by dropping every other sample folds everything above 12 kHz back into the
+audible band: an 18 kHz tone came through at full energy as 6 kHz. Measured against
+`resample_poly`, which attenuates it 57 dB. The control condition therefore carried
+a distortion no other condition had. `real` was also the only condition still at
+48 kHz — the one axis the design had left uncontrolled. Everything is now
+band-limited to 24 kHz, so the vocoder is the only thing separating `real` from
+`vocoded`.
+
+The corrected benchmark is 12 held-out sentences × 4 conditions = 96 items. It has
+not been rated yet, and there is still no quality number for this project. That is
+the accurate statement.
+
+### The model speaks a third faster than the speaker
+
+The held-out recordings make a comparison possible that was not before: the same
+sentences, by the person and by the model. Summed over all twelve, the speaker takes
+**60.8 s and the model 45.4 s — a ratio of 0.75**, worst 0.55 on `h5`.
+
+This is not something fine-tuning can fix, and `ours` and `stock` come out to
+identical durations for the same reason: f5-tts sets output length arithmetically,
+not acoustically.
+
+    generated_seconds = ref_seconds × gen_bytes / ref_bytes / speed
+
+The enrolment clip is the speaker talking quickly — 5.28 s for 69 characters, an
+implied 33.9 bytes/s against the 27.9 bytes/s he actually reads at. Every sentence
+inherits that rate. The formula predicts the measured durations within 4 % on the
+pure-Devanagari sentences, which is what confirms the mechanism.
+
+`IndicTTSEngine` already takes `speed`; the empirical correction for this profile is
+0.75, and it is derivable per profile from clips the speaker has already recorded.
+It is not applied yet, on purpose — rate is exactly the kind of change that should
+be settled by the listening test rather than by the person proposing it, and
+slowing synthesis has to be re-checked against the round trip before it ships.
+
+### Recording the speaker gave the round-trip check a control, and it failed it
+
+Twelve human readings of the sentences the model also speaks is a control the
+intelligibility harness never had. Run it on the human and the number should be
+close to perfect, because a person reading their own language is intelligible by
+construction. It came back **54 %** on the code-mixed sentence — which does not
+indict the speaker, it indicts the scorer. Two bugs, both of which had been quietly
+depressing every Hindi score:
+
+**`check()` compared the two sides in different scripts.** Whisper writes loanwords
+in Devanagari (`डॉक्यूमेंटरी`) while the held-out text keeps them in Latin
+(`documentary`), so every character of every English word counted as a miss. The
+engine transliterates before synthesis, so Devanagari was always the correct side to
+compare on. `hindi_tts` had done this from the start via `normalize_hi`; `check`,
+the one the README points you to for a single file, never did. Same sentence after
+the fix: **92 %**.
+
+**Whisper was fed aliased audio.** `transcribe` resampled to 16 kHz by dropping
+samples, folding everything above 8 kHz back onto the speech about to be judged.
+The identical bug was in the vocoder control. It is now one function,
+`eval/audio.py`, with the reason written down, because it was independently written
+wrong twice.
+
+With both fixed, the human anchor is the useful part:
+
+| | mean overlap | intelligible |
+| --- | --- | --- |
+| real (the speaker) | **90.2 %** | 12/12 |
+| stock IndicF5 | 88.8 % | 12/12 |
+| ours (fine-tuned) | 87.3 % | 12/12 |
+
+The ceiling is 90 %, not 100 %. Every previous Hindi number in this README was read
+against an implicit 100 % that this metric cannot reach — the residue is Whisper's
+spelling disagreeing with the transliterator's, not bad speech. Read that way, both
+models sit within ~3 points of a human reading the same sentences.
+
+It also puts the fine-tune slightly *below* stock, entirely on the three code-mixed
+sentences (73/75/82 against 81/75/85). Fine-tuning on one speaker's Hindi-only clips
+plausibly costs a little English handling. At twelve sentences that is a hypothesis,
+not a finding, and it is one the listening test is better placed to settle than this
+metric is.
+
+## Phase 12 — off IndicF5, onto Chatterbox Multilingual
+
+`voice-doctor` failed for months with `licenses=False`, and this is the change
+that fixed it. It is recorded here because the reasoning matters more than the
+diff, and because two of the things it turned up were surprises.
+
+**The problem was never IndicF5's weights.** Those are MIT. It was the `f5-tts`
+package needed to run them, which drags in `encodec` (CC-BY-NC), `Unidecode`
+(GPL), `frozendict` (LGPL-3) and `soxr` (LGPL-2.1). A non-commercial licence
+restricts *use*, not only redistribution, so "we are a service, we never ship
+weights" does not clear CC-BY-NC. There used to be a LAN split here — a second
+machine ran `--extra indic` and this one ran `--extra remote` — which kept those
+packages out of *this* venv and turned the audit green locally. That isolated
+the violation; it did not resolve it. Both the extra and the service are gone.
+
+**The fix was already installed.** `mlx-audio` ships Resemble AI's Chatterbox
+Multilingual alongside the Chatterbox Turbo used for cloning, and it speaks
+Hindi:
+
+```
+mlx_audio/tts/models/chatterbox/chatterbox.py:43    "hi": "Hindi",
+```
+
+MIT, 23 languages, zero-shot cloning from the same reference clip. No new
+dependency.
+
+**Quality was measured before the switch, not assumed.** Same 12 held-out
+sentences, same reference clip, the project's own round-trip scorer:
+
+| | human (ceiling) | IndicF5 | Chatterbox |
+| --- | --- | --- | --- |
+| Mean round-trip overlap | 90.2 % | 88.7 % | **94.0 %** |
+| Worst sentence | 81 % | 75 % | **84 %** |
+| Code-mixed subset | 91.5 % | 86.0 % | **95.4 %** |
+| Aggregate RTF | — | 3.40 | **1.24** |
+
+Better on 9 of 12, tied on 2, worse on none. The biggest gains are digits
+(75 → 95 %) and mid-sentence code-switching (81 → 94 %) — the two registers the
+held-out set was built to stress. Full write-up and audio in
+`eval_out/chatterbox_spike/FINDINGS.md`.
+
+Read the 94 % correctly: it is **above** the human anchor, which means the engine
+has reached this metric's ceiling and round trip can no longer discriminate. It
+says Chatterbox is not worse and is 2.7× faster. It does not say it sounds
+better — intelligibility is not naturalness, and that is what Phase 11 is for.
+
+Sampling follows the recipe in Praxy Voice (arXiv 2604.25441), which tuned
+Chatterbox for Indic text: `exaggeration=0.7, temperature=0.6, min_p=0.1`. Its
+other finding is load-bearing too — the paper's LoRA helps Telugu and Tamil but
+*regresses* Hindi, and its own model card says to use vanilla Chatterbox for
+Hindi. That is what this does.
+
+### What it cost
+
+**Ten languages.** IndicF5 spoke 11 Indian languages; this checkpoint speaks
+Hindi and no other Indic one. The router still claims every Indic script,
+deliberately: `route_for` falls back to `routes[0]`, which *is* the Indic route,
+so narrowing it would send Bengali to a Hindi voice silently. Claiming the script
+and raising `UnsupportedLanguage` names the language in the error instead.
+
+**Memory.** 3.04 GiB after load and 5.09 GiB MLX peak during generation, against
+IndicF5's 1.4 GiB checkpoint. `MIN_FREE_GIB` went from 2.5 to 4.0, so Hindi that
+used to synthesize on a very full machine will now be refused.
+
+**Fine-tuning.** Chatterbox clones zero-shot, so there is one checkpoint for
+every voice. `voice-train-prep`, the f5-tts trainer path and the per-profile
+checkpoint lookup in `web/server.py` are all gone, and Phase 10's fine-tune with
+them. The dataset builder stays — a clean transcribed corpus is the asset that
+takes weeks to collect, and it is worth having whatever consumes it next.
+
+### Two things the switch turned up
+
+**The 0.75 speed correction does not transfer, and shipping it would have been
+wrong.** It was an f5-tts artifact: that model set duration arithmetically from
+the enrolment clip. Chatterbox runs at **0.81×** the speaker's duration and
+exposes no `speed` parameter at all. Applying the derived 0.75 would have made
+output ~8 % too slow.
+
+**The round-trip scorer has a short-clip bug.** h8 ("बिल्कुल, हो जाएगा।", 1.7 s)
+auto-detected as **Korean** and scored 0 %. The transcript `밀쿨 호자에가`
+romanises to *milkul hojaega* — it is the target sentence. Pinned to `hi` the same
+file scores 88 %. This is the Hindi/Urdu case already handled in
+`EQUIVALENT_LANGUAGES`, in a script nobody thought to alias, and it fired on 2 of
+10 repeats at two different temperatures. Short clips need a pinned re-decode
+before round trip is trusted as a gate.
+
+Generation is also unseeded upstream, so the engine seeds per call as
+`indic_engine` did. Verified: with a seed the T3 speech tokens are bit-identical
+across runs, while the audio differs by ~1.2e-07 peak — Metal reduction order,
+not sampling. Compare seeded output with a tolerance, never with `array_equal`.
+
 ## Layout
 
 | Path | Role |
@@ -763,8 +886,8 @@ model fits in memory, two do not.
 | `storage/` | Encrypted history and memory (Phase 6) |
 | `voice_clone/` | Consent-gated voice cloning (Phase 7) |
 | `text/` | Script detection, Hindi normalization, Latin→Devanagari (Phase 9) |
-| `eval/` | Hindi round-trip, register and diagnostic harnesses (Phase 9) |
-| `train/` | Fine-tune preparation and reading prompts (Phase 10) |
+| `eval/` | Hindi round-trip and register harnesses (Phase 9), blind A/B benchmark (Phase 11) |
+| `train/` | Reading prompts for voice enrolment (Phase 10; the fine-tune prep went in Phase 12) |
 | `diagnostics/` | Environment and budget checks (Phase 0) |
 | `models.py` | Model registry, licenses, memory budget |
 
@@ -782,21 +905,33 @@ model fits in memory, two do not.
 - [x] **Phase 8** — Tauri `.app` bundle (launcher, not yet self-contained)
 - [x] **Phase 9** — Hindi: intelligible TTS (22/22), ASR at 4.8 % CER, no *LLM* fine-tune needed
 - [x] **Phase 10** — voice fine-tuning: dataset builder, IndicF5 fine-tune, judged
-      indistinguishable by the speaker
+      indistinguishable by the speaker. *The fine-tune itself is retired — see
+      Phase 12; the dataset builder is not.*
+- [x] **Phase 11** — blind listening test: harness, held-out sentences recorded by
+      the speaker. **Built, not yet rated** — see below
+- [x] **Phase 12** — Hindi moved from IndicF5 to Chatterbox Multilingual (MIT).
+      `voice-doctor` exits 0 with every extra installed
 
 Known gaps, stated rather than buried:
 
-- **`voice-doctor` currently fails**: `f5-tts` pulled in four non-permissive
-  packages, one of them non-commercial. Personal use is unaffected; commercial
-  distribution of the Indic path is not cleared. See above. Moving Indic TTS to a
-  second machine (`--extra remote` here, `--extra indic` there) makes it pass
-  *here* by keeping those packages off this venv — which isolates the violation
-  rather than resolving it.
-- Hindi is **type-and-listen only** (RTF 3.40); the live loop stays English.
+- Hindi covers **Hindi only**. IndicF5 spoke 11 Indian languages; Chatterbox
+  Multilingual speaks 1 of them. Other Indic scripts now raise
+  `UnsupportedLanguage` rather than being spoken badly (Phase 12).
+- Hindi is still **type-and-listen** — but at RTF 1.24 rather than 3.40, so a
+  bilingual live loop is now an engineering problem rather than a research one.
 - No acoustic echo cancellation — use headphones (Phase 4).
 - The desktop app is a launcher and still needs the checkout and its `.venv`.
-- Hindi *quality* beyond intelligibility has no automated measure. F0 and spectral
-  centroid were tried and contradicted the speaker's own ear, so they are not it.
+- Hindi *quality* beyond intelligibility still has no result. The blind harness
+  exists (Phase 11) and `results()` refuses a verdict below 20 ratings per
+  system. F0 and spectral centroid were tried and contradicted the speaker's own
+  ear, so they are not it. Note that AI4Bharat has since published
+  **SpeechArenaBench** (arXiv 2604.21481) — 120K pairwise comparisons from 1,900
+  native raters, sentences and preference data released — which is a far better
+  instrument than recruiting listeners here. It also ranks IndicF5 last of seven
+  systems, which is part of why Phase 12 happened.
+- The synthetic voice runs ~19 % faster than the speaker (0.81×, down from
+  IndicF5's 0.75×). Chatterbox exposes no speed control, so there is currently no
+  knob to correct it with.
 
 ## Rejected models
 
@@ -806,3 +941,9 @@ These are non-commercial and must not be reintroduced (see `DENYLIST` in
 - **XTTS v2** — CPML, non-commercial.
 - **F5-TTS** — trained on Emilia (CC-BY-NC-4.0).
 - **Fish Speech** — weights are CC-BY-NC-SA-4.0.
+
+**IndicF5** is a different case and worth stating precisely, because the entry
+above is easy to over-read. Its weights are MIT and it is not denylisted. What
+made it unusable was the `f5-tts` runtime it needs — `encodec` (CC-BY-NC),
+`Unidecode` (GPL), `frozendict` (LGPL-3), `soxr` (LGPL-2.1). A permissive model
+card is not a clean dependency tree, and the audit is on the tree. See Phase 12.

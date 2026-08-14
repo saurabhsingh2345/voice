@@ -52,9 +52,14 @@ ROOT = Path(__file__).resolve().parents[3] / "eval_out" / "abtest"
 IDENTITY = "identity"
 NATURALNESS = "naturalness"
 
-#: A rating faster than this means the listener did not hear the clip out. Kept as
-#: quality control rather than a hard reject: the scores are reported both ways so
-#: an inattentive listener is visible instead of silently averaged in.
+#: Floor for how long a rating must take, for a clip of unknown length. The real
+#: threshold is the clip's own duration -- see `min_listen_ms` -- because `ms` is
+#: measured from first play to answer, so answering sooner than the clip lasts is
+#: proof the listener did not hear it out. A fixed 1.2 s missed this entirely: one
+#: rater answered an 8.4 s clip in 2.4 s and it counted.
+#:
+#: Kept as quality control rather than a hard reject: the scores are reported both
+#: ways so an inattentive listener is visible instead of silently averaged in.
 MIN_LISTEN_MS = 1200
 
 #: Below this many ratings per system, report the interval and refuse to call it.
@@ -72,6 +77,10 @@ class Item:
     slug: str
     kind: str
     is_real: bool = False
+    duration_s: float = 0.0
+    """Clip length, recorded at build time so scoring can tell a rating that heard
+    the clip from one that did not. Zero on benchmarks built before this existed;
+    `min_listen_ms` then reads the audio instead."""
 
 
 @dataclass
@@ -79,6 +88,8 @@ class Benchmark:
     benchmark_id: str
     created_at: str
     items: list[Item] = field(default_factory=list)
+    _measured: dict[str, float] = field(default_factory=dict, repr=False)
+    """Durations read back off disk for pre-`duration_s` benchmarks. Cache only."""
 
     # --- paths ------------------------------------------------------------
 
@@ -158,6 +169,39 @@ class Benchmark:
                 return candidate
         raise KeyError(item_id)
 
+    def min_listen_ms(self, item_id: str) -> float:
+        """How long a genuine rating of this clip takes, at minimum.
+
+        The clip's own duration, because the UI times from first play to answer.
+        Falls back to reading the wav for benchmarks built before `duration_s` was
+        recorded, and to the flat floor if even that is unavailable.
+        """
+        item = self.item(item_id)
+        seconds = item.duration_s
+        if not seconds:
+            seconds = self._measured.get(item_id, -1.0)
+            if seconds < 0:
+                seconds = duration_of(self.audio_path(item_id))
+                self._measured[item_id] = seconds
+        return max(float(MIN_LISTEN_MS), seconds * 1000.0)
+
+    def content_matched(self, system: str) -> bool:
+        """Does `system` cover the same sentences as the real condition?
+
+        The identity question is "did a person say this". If the real clips are
+        different sentences from the synthetic ones, a listener can answer it by
+        sorting content, length or speaking style, and the score stops being about
+        the voice. `build_benchmark` falls back to training clips when the speaker
+        has not read the held-out set, which produces exactly that — so this is a
+        live failure mode, not a hypothetical one.
+        """
+        identity = [i for i in self.items if i.kind == IDENTITY]
+        real = {i.slug for i in identity if i.is_real}
+        mine = {i.slug for i in identity if i.system == system}
+        if not real or not mine:
+            return False
+        return real == mine
+
     # --- ratings ----------------------------------------------------------
 
     def ratings_path(self, listener_id: str) -> Path:
@@ -199,14 +243,18 @@ class Benchmark:
     def results(self, kind: str, include_rushed: bool = False) -> dict:
         """Per-system scores with intervals.
 
-        `include_rushed=False` drops ratings given faster than MIN_LISTEN_MS. Both
-        views are worth looking at: a large gap between them means the numbers rest
-        on people clicking through.
+        `include_rushed=False` drops ratings given faster than the clip they judge.
+        Both views are worth looking at: a large gap between them means the numbers
+        rest on people clicking through.
         """
         ratings = [r for r in self.all_ratings() if self.item(r["item_id"]).kind == kind]
-        rushed = [r for r in ratings if r.get("ms", 10**9) < MIN_LISTEN_MS]
+
+        def heard_it(rating: dict) -> bool:
+            return rating.get("ms", 10**9) >= self.min_listen_ms(rating["item_id"])
+
+        rushed = [r for r in ratings if not heard_it(r)]
         if not include_rushed:
-            ratings = [r for r in ratings if r.get("ms", 10**9) >= MIN_LISTEN_MS]
+            ratings = [r for r in ratings if heard_it(r)]
 
         by_system: dict[str, list[dict]] = {}
         for rating in ratings:
@@ -217,12 +265,16 @@ class Benchmark:
             if kind == IDENTITY:
                 called_real = [1 if r.get("called_real") else 0 for r in group]
                 low, high = wilson(sum(called_real), len(called_real))
+                is_real = self.item(group[0]["item_id"]).is_real
+                matched = is_real or self.content_matched(system)
                 systems[system] = {
                     "n": len(group),
                     "metric": "fooled_rate",
                     "value": round(sum(called_real) / len(called_real), 4) if called_real else None,
                     "ci95": [round(low, 4), round(high, 4)],
-                    "is_real": self.item(group[0]["item_id"]).is_real,
+                    "is_real": is_real,
+                    "content_matched": matched,
+                    "interpretable": matched,
                 }
             else:
                 scores = [float(r["score"]) for r in group if r.get("score") is not None]
@@ -235,21 +287,47 @@ class Benchmark:
                 }
 
         listeners = {r["listener"] for r in ratings}
-        enough = all(s["n"] >= MIN_RATINGS_FOR_A_VERDICT for s in systems.values()) and systems
+        enough = bool(systems) and all(s["n"] >= MIN_RATINGS_FOR_A_VERDICT for s in systems.values())
+        unmatched = sorted(s for s, v in systems.items() if not v.get("interpretable", True))
+
+        notes = []
+        if unmatched:
+            notes.append(
+                f"{', '.join(unmatched)} answered different sentences than the real "
+                "condition, so this measures content as much as voice; record the "
+                "held-out set at /record-benchmark and rebuild"
+            )
+        if not enough:
+            notes.append(
+                f"fewer than {MIN_RATINGS_FOR_A_VERDICT} ratings for some system; "
+                "read the intervals, do not call a winner"
+            )
         return {
             "kind": kind,
             "systems": systems,
             "listeners": len(listeners),
             "ratings": len(ratings),
             "rushed_dropped": len(rushed) if not include_rushed else 0,
-            "verdict_supported": bool(enough),
-            "note": (
-                None
-                if enough
-                else f"fewer than {MIN_RATINGS_FOR_A_VERDICT} ratings for some system; "
-                "read the intervals, do not call a winner"
-            ),
+            "verdict_supported": enough and not unmatched,
+            "note": "; ".join(notes) or None,
         }
+
+
+# --- audio ----------------------------------------------------------------
+
+
+def duration_of(path: Path) -> float:
+    """Seconds of audio, or 0.0 if it cannot be read.
+
+    Zero degrades the listen-time check to the flat floor rather than dropping every
+    rating of a clip whose header will not parse.
+    """
+    try:
+        import soundfile as sf
+
+        return float(sf.info(str(path)).duration)
+    except Exception:  # noqa: BLE001
+        return 0.0
 
 
 # --- statistics -----------------------------------------------------------
@@ -325,6 +403,7 @@ def build(
                     slug=slug,
                     kind=kind,
                     is_real=system in real_systems,
+                    duration_s=round(duration_of(source), 3),
                 )
                 shutil.copyfile(source, benchmark.audio_path(item.item_id))
                 benchmark.items.append(item)
