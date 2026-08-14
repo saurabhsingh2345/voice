@@ -2,14 +2,21 @@
 
     uv run python -m voiceagent.eval.build_benchmark <profile_id>
 
-Produces four conditions, and the fourth is the one that makes the test
+Produces three conditions, and the second is the one that makes the test
 interpretable rather than merely suggestive:
 
   real      untouched recordings of the speaker            (upper anchor)
   vocoded   those same recordings passed through the       (channel control)
             mel-spectrogram and vocoder, nothing else
-  ours      the fine-tuned model on held-out sentences
-  stock     stock IndicF5 on the same sentences            (baseline)
+  ours      Chatterbox Multilingual on held-out sentences
+
+There used to be a fourth. `ours` was a per-voice IndicF5 fine-tune and `stock`
+was unmodified IndicF5, so the pair measured what fine-tuning bought. Chatterbox
+clones zero-shot --- there is one checkpoint for every voice --- so the two
+conditions would be byte-identical and the comparison is gone. What replaces it
+is a *baseline*: drop the old IndicF5 renders (or ElevenLabs, or Sarvam) into
+`eval_out/benchmark_samples/<name>/<slug>.wav` and re-run. Those join the
+naturalness test only; see `identity_systems` below for why.
 
 WHY THE VOCODER CONTROL EXISTS
 
@@ -44,7 +51,8 @@ import soundfile as sf
 
 from voiceagent.eval import heldout
 from voiceagent.eval.abtest import IDENTITY, NATURALNESS, build
-from voiceagent.tts.indic_engine import concat_with_crossfade
+from voiceagent.eval.audio import resample as _resample
+from voiceagent.tts.chatterbox_indic import concat_with_crossfade
 from voiceagent.voice_clone.dataset import VoiceDataset
 
 #: Common loudness for every condition. -20 dBFS RMS is a conventional speech
@@ -57,6 +65,17 @@ WORK = Path("eval_out/benchmark_samples")
 #: the "real" condition, because it makes real and synthetic differ in exactly one
 #: thing. See the confound note in `web.server.benchmark_record`.
 REAL_HELDOUT = WORK / "real_heldout"
+
+
+def resample(audio: np.ndarray, from_rate: int, to_rate: int = 24_000) -> np.ndarray:
+    """Every condition reaches the listener at one rate.
+
+    The microphone records at 48 kHz and the model synthesises at 24 kHz. Left alone
+    that is a second channel difference sitting next to the vocoder — `real` would be
+    the only condition carrying anything above 12 kHz, which is a tell that has
+    nothing to do with whether a person spoke.
+    """
+    return _resample(audio, from_rate, to_rate)
 
 
 def match_loudness(audio: np.ndarray, target: float = TARGET_RMS) -> np.ndarray:
@@ -92,40 +111,65 @@ def real_clips(profile_id: str, count: int) -> list[tuple[str, np.ndarray, int]]
     return picked
 
 
-def vocode(audio: np.ndarray, rate: int) -> np.ndarray | None:
+def vocode(audio: np.ndarray, rate: int, engine=None) -> np.ndarray | None:
     """Real speech through the same mel-and-vocoder path the model synthesises through.
+
+    The control that makes the rest of the benchmark interpretable. A listener
+    who marks our samples as synthetic may be hearing the *clone* or merely the
+    *channel* --- every generated sample passes through a mel bottleneck and a
+    neural vocoder, and that alone leaves an audible signature. Passing a real
+    recording through the identical path and rating it too separates the two. If
+    vocoded-real scores as badly as ours, the tell is the channel and improving
+    the clone will not move it.
+
+    Reimplemented on Chatterbox's own HiFiGAN when the Hindi path moved off
+    IndicF5. It used to run f5-tts's vocos at 24 kHz; it now takes the mel
+    parameters straight from `s3gen.embed_ref` (n_fft 1920, 80 mels, hop 480,
+    fmax 8000, center=False) so the control passes through the same bottleneck
+    the model actually uses. Those constants are not free choices --- a mel that
+    does not match what `mel2wav` was trained on reconstructs badly, and the
+    control would then overstate the channel's contribution.
 
     Returns None if the vocoder is unavailable, so a missing control degrades the
     benchmark rather than breaking it.
     """
     try:
-        import torch
-        from f5_tts.infer import utils_infer as U
+        import mlx.core as mx
 
-        vocoder = U.load_vocoder(vocoder_name="vocos", is_local=False, device="cpu")
-        if rate != U.target_sample_rate:
-            idx = (np.arange(int(len(audio) * U.target_sample_rate / rate))
-                   * rate / U.target_sample_rate).astype(int)
-            audio = audio[idx[idx < len(audio)]]
-        wave = torch.from_numpy(np.asarray(audio, dtype=np.float32)).unsqueeze(0)
-        from f5_tts.model.modules import MelSpec
+        from mlx_audio.tts.models.chatterbox.s3gen.mel import mel_spectrogram
 
-        mel_spec = MelSpec(
-            n_fft=U.n_fft, hop_length=U.hop_length, win_length=U.win_length,
-            n_mel_channels=U.n_mel_channels, target_sample_rate=U.target_sample_rate,
-            mel_spec_type="vocos",
-        )
-        with torch.no_grad():
-            mel = mel_spec(wave)
-            out = vocoder.decode(mel)
-        return np.asarray(out.squeeze().cpu().numpy(), dtype=np.float32)
+        if engine is None or engine._model is None:
+            print("  vocoder control needs a loaded engine; skipped")
+            return None
+
+        def run():
+            wave = mx.array(np.asarray(resample(audio, rate, 24_000), dtype=np.float32))
+            mel = mel_spectrogram(
+                mx.expand_dims(wave, 0),
+                n_fft=1920, num_mels=80, sampling_rate=24_000,
+                hop_size=480, win_size=1920, fmin=0, fmax=8000, center=False,
+            )
+            # (B, D, T) -> (B, T, D), the layout mel2wav.inference expects.
+            out, _ = engine._model.s3gen.hift_inference(
+                speech_feat=mx.transpose(mel, [0, 2, 1])
+            )
+            return np.asarray(out, dtype=np.float32).reshape(-1)
+
+        # MLX arrays are thread-affine, so this has to run on the same thread
+        # that loaded the weights. See ChatterboxIndicEngine._run.
+        return engine._run(run)
     except Exception as exc:  # noqa: BLE001
         print(f"  vocoder control unavailable ({type(exc).__name__}: {exc})")
         return None
 
 
 def synthesize(engine, reference, reference_text, rate, sentences) -> dict[str, np.ndarray]:
-    engine.load()
+    """Render every held-out sentence. Assumes the engine is already loaded.
+
+    Loading and unloading moved out to `main`, because the vocoder control now
+    runs on the same model's HiFiGAN and must share the loaded instance --- and
+    its thread. See `vocode`.
+    """
     engine.set_reference(reference, reference_text, rate)
     out = {}
     for sentence in sentences:
@@ -143,7 +187,6 @@ def synthesize(engine, reference, reference_text, rate, sentences) -> dict[str, 
         audio = concat_with_crossfade(parts, 24_000)
         out[sentence.slug] = audio
         print(f"    {sentence.slug}: {len(audio)/24000:5.2f}s in {time.perf_counter()-started:5.1f}s")
-    engine.unload()
     return out
 
 
@@ -152,11 +195,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("profile_id")
     parser.add_argument("--limit", type=int, default=len(heldout.SENTENCES),
                         help="how many held-out sentences to use")
-    parser.add_argument("--skip-stock", action="store_true",
-                        help="skip the stock baseline (halves the runtime)")
+    parser.add_argument("--skip-synthesis", action="store_true",
+                        help="rebuild from WAVs already on disk, without synthesizing")
+    parser.add_argument("--allow-unmatched-real", action="store_true",
+                        help="build from training clips when the held-out set is not "
+                             "recorded — produces an uninterpretable identity test")
     args = parser.parse_args(argv)
 
-    from voiceagent.tts.indic_engine import IndicTTSEngine
+    from voiceagent.tts.chatterbox_indic import ChatterboxIndicEngine
     from voiceagent.voice_clone.store import VoiceProfileStore
 
     store = VoiceProfileStore()
@@ -170,12 +216,19 @@ def main(argv: list[str] | None = None) -> int:
         reference = reference.mean(axis=1)
 
     sentences = list(heldout.SENTENCES)[: args.limit]
-    checkpoint = Path("data/f5tts_ckpts") / args.profile_id / "model_last.pt"
     samples: dict[str, dict[str, Path]] = {}
 
     print(f"profile   : {profile.speaker_name} ({args.profile_id})")
-    print(f"sentences : {len(sentences)} held out")
-    print(f"checkpoint: {'present' if checkpoint.exists() else 'MISSING — no fine-tuned condition'}\n")
+    print(f"sentences : {len(sentences)} held out\n")
+
+    # One engine for both the synthesis and the vocoder control. It is loaded
+    # here rather than inside `synthesize` because `vocode` reaches into the same
+    # model's HiFiGAN, and MLX arrays cannot cross threads --- so both have to go
+    # through this instance's worker.
+    engine = ChatterboxIndicEngine()
+    if not args.skip_synthesis:
+        print("loading Chatterbox Multilingual ...")
+        engine.load()
 
     # 1. real -- content-matched if the speaker has read the held-out sentences.
     #
@@ -196,24 +249,48 @@ def main(argv: list[str] | None = None) -> int:
             audio, clip_rate = sf.read(path, dtype="float32")
             if audio.ndim > 1:
                 audio = audio.mean(axis=1)
-            samples["real"][slug] = write(WORK / "real" / f"{slug}.wav", audio, clip_rate)
-            reals.append((slug, audio, clip_rate))
-            print(f"    {slug}: {len(audio)/clip_rate:5.2f}s")
+            # To 24 kHz here, not at playback: the browser would resample it anyway,
+            # but then `real` would be the only condition carrying content above
+            # 12 kHz. Doing it now leaves the vocoder as the only thing separating
+            # `real` from `vocoded`, which is what that control is for.
+            audio = resample(audio, clip_rate, 24_000)
+            samples["real"][slug] = write(WORK / "real" / f"{slug}.wav", audio)
+            reals.append((slug, audio, 24_000))
+            print(f"    {slug}: {len(audio)/24_000:5.2f}s")
+    elif not args.allow_unmatched_real:
+        # Refuses rather than warns, because the warning was not enough. The first
+        # run took this path, printed this text, scrolled it away, and two people
+        # spent their afternoon rating a test whose identity result could not mean
+        # anything. Listener time is the scarcest input here; spending it on a
+        # confounded benchmark is the expensive mistake, not stopping early.
+        print("real recordings: only "
+              f"{len(matched)} of {len(sentences)} held-out sentences are recorded.")
+        print()
+        print("  Refusing to fall back to training clips. Those are different")
+        print("  sentences, spoken spontaneously, and about twice as long as the")
+        print("  synthetic clips -- so a listener can sort them without hearing a")
+        print("  voice, and the fooled rate stops being about the voice.")
+        print()
+        print("  Record them:  uv run voice-web  ->  http://127.0.0.1:8823/record-benchmark")
+        print("  Or override:  --allow-unmatched-real  (naturalness only; identity")
+        print("                will be reported as uninterpretable)")
+        return 1
     else:
         print("real recordings: falling back to TRAINING CLIPS -- content will not match")
-        print(f"  record the held-out sentences at /record-benchmark to fix this")
+        print(f"  the identity test will be reported as uninterpretable")
         print(f"  ({len(matched)} of {len(sentences)} recorded so far)")
         for i, (clip_id, audio, clip_rate) in enumerate(real_clips(args.profile_id, len(sentences))):
             slug = f"r{i+1}"
-            samples["real"][slug] = write(WORK / "real" / f"{slug}.wav", audio, clip_rate)
-            reals.append((slug, audio, clip_rate))
-            print(f"    {slug}: {len(audio)/clip_rate:5.2f}s")
+            audio = resample(audio, clip_rate, 24_000)
+            samples["real"][slug] = write(WORK / "real" / f"{slug}.wav", audio)
+            reals.append((slug, audio, 24_000))
+            print(f"    {slug}: {len(audio)/24_000:5.2f}s")
 
     # 2. vocoded control
     print("\nvocoder control (real speech through mel + vocoder):")
     samples["vocoded"] = {}
     for slug, audio, clip_rate in reals:
-        done = vocode(audio, clip_rate)
+        done = vocode(audio, clip_rate, engine)
         if done is None:
             break
         samples["vocoded"][slug] = write(WORK / "vocoded" / f"{slug}.wav", done)
@@ -222,18 +299,24 @@ def main(argv: list[str] | None = None) -> int:
         del samples["vocoded"]
         print("    none produced — the channel confound will be uncontrolled")
 
-    # 3. fine-tuned
-    if checkpoint.exists():
-        print("\nfine-tuned:")
-        got = synthesize(IndicTTSEngine(checkpoint=checkpoint), reference,
-                         profile.reference_text, rate, sentences)
+    # 3. ours
+    if not args.skip_synthesis:
+        print("\nChatterbox Multilingual:")
+        got = synthesize(engine, reference, profile.reference_text, rate, sentences)
         samples["ours"] = {s: write(WORK / "ours" / f"{s}.wav", a) for s, a in got.items()}
+        engine.unload()
 
-    # 4. stock baseline
-    if not args.skip_stock:
-        print("\nstock IndicF5:")
-        got = synthesize(IndicTTSEngine(), reference, profile.reference_text, rate, sentences)
-        samples["stock"] = {s: write(WORK / "stock" / f"{s}.wav", a) for s, a in got.items()}
+    # 4. anything else already on disk -- an IndicF5 baseline kept from before the
+    # switch, or a competitor's renders of the same sentences.
+    for extra in sorted(WORK.glob("*/")):
+        name = extra.name
+        if name in samples or name == REAL_HELDOUT.name:
+            continue
+        found = {s.slug: extra / f"{s.slug}.wav" for s in sentences}
+        found = {slug: path for slug, path in found.items() if path.exists()}
+        if len(found) >= max(3, len(sentences) // 2):
+            samples[name] = found
+            print(f"\nbaseline on disk: {name} ({len(found)} sentences)")
 
     if len(samples) < 2:
         print("\nnot enough conditions to compare")
@@ -245,7 +328,7 @@ def main(argv: list[str] | None = None) -> int:
         # Identity asks "did a person say this". It is meaningful for the speaker's
         # own voice and its imitations, and meaningless for a third-party voice --
         # so competitor samples dropped in later join naturalness only.
-        identity_systems=tuple(k for k in samples if k in ("real", "vocoded", "ours", "stock")),
+        identity_systems=tuple(k for k in samples if k in ("real", "vocoded", "ours")),
     )
 
     print(f"\nbenchmark {bench.benchmark_id}")
@@ -254,8 +337,9 @@ def main(argv: list[str] | None = None) -> int:
           f"{sum(1 for i in bench.items if i.kind == NATURALNESS)} naturalness")
     print(f"  listen at  : http://127.0.0.1:8823/listen")
     print(f"  results at : http://127.0.0.1:8823/api/listen/latest/results")
-    print("\nTo add a competitor: put WAVs of the same held-out sentences in")
-    print(f"  {WORK}/<name>/<slug>.wav   then re-run with --skip-stock")
+    print("\nTo add a competitor or baseline: put WAVs of the same held-out")
+    print(f"  sentences in {WORK}/<name>/<slug>.wav, then re-run.")
+    print("  Add --skip-synthesis to reassemble without re-rendering.")
     return 0
 
 

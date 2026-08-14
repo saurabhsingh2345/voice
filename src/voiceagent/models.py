@@ -208,6 +208,33 @@ REGISTRY: tuple[ModelSpec, ...] = (
             "over Fish Speech, whose weights are CC-BY-NC-SA-4.0."
         ),
     ),
+    ModelSpec(
+        name="Chatterbox Multilingual v3 (MLX)",
+        stage=Stage.TTS,
+        license="MIT",
+        repo="mlx-community/chatterbox-multilingual-v3",
+        weights_gb=3.04,
+        runtime_overhead_gb=2.05,
+        phase=9,
+        default=False,
+        measured=True,
+        notes=(
+            "Hindi. Replaced IndicF5 in Phase 0 of the commercial-readiness "
+            "pass -- not because IndicF5's weights were a problem (they are "
+            "MIT) but because running it required `f5-tts`, which drags in "
+            "encodec (CC-BY-NC), Unidecode (GPL), frozendict (LGPL-3) and soxr "
+            "(LGPL-2.1). That tree is what made voice-doctor exit non-zero. "
+            "Measured 3.04 GiB after load, 5.09 GiB MLX peak during generation "
+            "(cache-inclusive). Quality was measured before the switch, not "
+            "assumed: on the 12 held-out sentences it scores 94.0 % mean "
+            "round-trip overlap against IndicF5's 88.7 %, 95.4 % vs 86.0 % on "
+            "the code-mixed subset, at RTF 1.24 vs 3.40 -- see "
+            "eval_out/chatterbox_spike/FINDINGS.md. The cost is coverage: this "
+            "checkpoint speaks Hindi and no other Indic language, where "
+            "IndicF5 spoke 11. Loaded only for Hindi; NOT co-resident with "
+            "Kokoro or Chatterbox Turbo."
+        ),
+    ),
 )
 
 
