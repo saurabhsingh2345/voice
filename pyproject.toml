@@ -48,7 +48,6 @@ tts = [
     # the pieces of `en` we actually use and omit the espeak fallback --
     # see voiceagent.tts.kokoro_engine._disable_gpl_espeak_fallback.
     "misaki>=0.9.4",
-    "num2words>=0.5",  # LGPL -- recorded exception, see models.ACCEPTED_EXCEPTIONS
     "spacy>=3.8",
 ]
 

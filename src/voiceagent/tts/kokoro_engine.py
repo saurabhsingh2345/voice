@@ -36,6 +36,27 @@ class EspeakFallbackDisabled(RuntimeError):
     """Raised (and caught by mlx-audio) to refuse the GPL phonemizer path."""
 
 
+def _use_permissive_dependencies() -> None:
+    """Both licence substitutions, in the order misaki needs them.
+
+    Kokoro's text frontend reaches for two packages this project will not ship:
+    `phonemizer-fork` (GPLv3) and `num2words` (LGPL-2.1). Neither is a licensing
+    risk while Python stays an ordinary importable tree; both become one the
+    moment it is frozen into a single opaque binary, which is what the desktop
+    bundle does. Handled the same way and always together, because handling one
+    and forgetting the other is how a bundle ships a licence problem.
+    """
+    _install_permissive_num2words()
+    _disable_gpl_espeak_fallback()
+
+
+def _install_permissive_num2words() -> None:
+    """`misaki.en` imports num2words at module scope; give it ours instead."""
+    from voiceagent.text.num2words_shim import install
+
+    install()
+
+
 def _disable_gpl_espeak_fallback() -> None:
     """Make `misaki.espeak` importable but non-functional.
 
@@ -84,7 +105,7 @@ class KokoroEngine(TTSEngine):
     def load(self) -> None:
         import mlx.core as mx
 
-        _disable_gpl_espeak_fallback()
+        _use_permissive_dependencies()
         from mlx_audio.tts.utils import load_model
 
         mx.reset_peak_memory()
@@ -197,7 +218,7 @@ class KokoroEngine(TTSEngine):
         These are silently dropped from the audio, so this is how we find out
         whether disabling the GPL fallback costs us anything in practice.
         """
-        _disable_gpl_espeak_fallback()
+        _use_permissive_dependencies()
         from misaki import en
 
         g2p = en.G2P(trf=False, british=False, fallback=None, unk="")

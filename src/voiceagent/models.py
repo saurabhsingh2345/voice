@@ -275,18 +275,26 @@ COPYLEFT_PATTERN = re.compile(
 MAX_LICENSE_ID_CHARS = 80
 
 #: Packages whose non-permissive license we have consciously accepted, with why.
-ACCEPTED_EXCEPTIONS: dict[str, str] = {
-    "num2words": (
-        "LGPL-2.1. ACCEPTED, knowingly. Imported unmodified by misaki to turn "
-        "digits into words for Kokoro. The LGPL permits commercial use of an "
-        "unmodified library, so this does not restrict the product -- but it "
-        "carries one obligation the Apache/MIT/BSD set does not: recipients "
-        "must be able to replace the library with their own version. Shipping "
-        "it as an ordinary importable Python package in site-packages "
-        "satisfies that; freezing it into a single opaque binary would not. "
-        "Revisit if the Tauri build ever bundles Python into one archive."
-    ),
-}
+#:
+#: Empty, and that is the point. It held exactly one entry for most of this
+#: project's life -- `num2words`, LGPL-2.1, imported by misaki to turn digits
+#: into words for Kokoro. The note there said to revisit it "if the Tauri build
+#: ever bundles Python into one archive", because the LGPL's one real obligation
+#: is that recipients can replace the library, and an opaque frozen binary
+#: cannot satisfy that.
+#:
+#: That day arrived: a self-contained desktop bundle is the whole point of the
+#: packaging work, so the exception had to go rather than be renewed.
+#: `text/numbers.py` replaces it -- written against the library's observed
+#: output rather than its source, so nothing LGPL is derived or vendored, and
+#: verified at full parity over every integer to 10,000, every year to 20,000,
+#: every ordinal to 2,000, and several thousand floats. `text/num2words_shim.py`
+#: registers it under the name misaki imports.
+#:
+#: Adding an entry here is a real decision. It means the audit passes on
+#: something the rule says it should not, and the reason has to survive being
+#: read back a year later by someone deciding whether to ship.
+ACCEPTED_EXCEPTIONS: dict[str, str] = {}
 
 #: Packages that must never be installed, and why.
 FORBIDDEN_PACKAGES: dict[str, str] = {

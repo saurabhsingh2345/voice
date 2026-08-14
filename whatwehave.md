@@ -90,8 +90,11 @@ Chatterbox rather than IndicF5 (Phase 12 — licence tree, and it measured bette
   checkpoint is 1.33 GiB resident, 2.77 GiB peak.
 - Sub-1 s turn latency is **not** met: ~1.8 s to first audio warm, ~2.4 s cold.
 - No acoustic echo cancellation — headphones advised.
-- Desktop app is a launcher, not a self-contained bundle (blocked partly by the
-  `num2words` LGPL obligation: Python can't be frozen opaquely).
+- Desktop app is a launcher, not a self-contained bundle. **No longer blocked on
+  licences**: `num2words` (LGPL) was the last exception and is now replaced by
+  `text/numbers.py` + `text/num2words_shim.py`, verified at full parity and
+  uninstalled. `ACCEPTED_EXCEPTIONS` is empty. What remains is packaging work —
+  embedding Python and the weights — not a licence problem.
 - Synthetic voice runs ~19 % faster than the speaker (0.81 ratio). The old 0.75
   figure was an f5-tts duration artifact and did **not** transfer; Chatterbox
   exposes no speed control, so there is no knob to correct it with.
@@ -124,9 +127,8 @@ See `plan.md` for the strategy this now serves, and why it changed.
 1. **Publish the measured spec sheet** (plan.md §6) — latency, RTF per language,
    resident memory per configuration, CER, round-trip against its real ceiling.
    Everything it needs is now measured.
-2. **Self-contained desktop bundle** — replace `num2words` with a Hindi/English
-   number routine we own (needed for lakh/crore anyway) and drop the last
-   recorded licence exception.
+2. **Self-contained desktop bundle** — the licence blocker is gone; what is left
+   is embedding Python and the weights in the Tauri shell.
 
 **Later**
 
