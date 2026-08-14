@@ -88,6 +88,28 @@ PUBLISHED_BT: dict[str, dict[str, float]] = {
 #: "ours" so a reader of a pasted table can tell what it was.
 OUR_SYSTEM = "Chatterbox Multilingual 8-bit (this repo)"
 
+#: The six axes are BINARY, whatever the documentation says.
+#:
+#: The dataset card and README present them as perceptual rating scales, and the
+#: values are int64 in a range that looks like 1-5. Measured over 654 rated
+#: clips, every axis takes exactly two values -- 1 and 5, with nothing in
+#: between:
+#:
+#:   intelligibility {1: 70, 5: 160}   expressiveness {1: 100, 5: 130}
+#:   voice_quality   {1: 94, 5: 136}   liveliness     {1: 96, 5: 134}
+#:   hallucinations  {1: 59, 5: 171}   noise          {1: 42, 5: 188}
+#:
+#: So a rater gave each axis a thumbs up or down, and a per-system "mean rating
+#: of 4.48" is not a score out of five -- it is an 87% good-rate wearing a
+#: disguise. Treating it as continuous invites two mistakes: reading small
+#: differences in the mean as quality gradations, and reaching for Pearson,
+#: which on a two-valued outcome is a point-biserial coefficient whose magnitude
+#: is capped by the class balance and is not comparable across systems with
+#: different balances.
+#:
+#: The honest instrument for "does our number predict this judgement" is AUC.
+GOOD_RATING = 4
+
 Subset = Literal["codemixed", "symbolic", "normalized"]
 
 _DEVANAGARI = re.compile(r"[ऀ-ॿ]")
@@ -482,17 +504,42 @@ def score_clips(clips: list[Clip], *, resume: bool = True) -> list[dict]:
     return list(done.values())
 
 
+def auc(scores: list[float], labels: list[bool]) -> float:
+    """Probability our score ranks a human-approved clip above a rejected one.
+
+    The Mann-Whitney form, so ties are handled by mid-ranks rather than being
+    silently broken. 0.5 is a coin flip; 1.0 is perfect separation.
+    """
+    from scipy import stats as st
+
+    positives = sum(labels)
+    negatives = len(labels) - positives
+    if not positives or not negatives:
+        return float("nan")
+    ranks = st.rankdata(scores)
+    positive_rank_sum = sum(r for r, is_good in zip(ranks, labels) if is_good)
+    return (positive_rank_sum - positives * (positives + 1) / 2) / (positives * negatives)
+
+
 def correlate(rows: list[dict]) -> dict:
-    """Does our round-trip overlap track what humans called intelligibility?
+    """Can our round-trip score predict a native speaker's verdict?
 
     This is the question the whole module exists to answer, and a null result is
-    a real one: if the correlation is flat, our scorer cannot place a system
-    against these raters and the honest move is to say so rather than to publish
-    a position it does not support.
+    a real one: if our number cannot separate clips humans approved from clips
+    they rejected, then it cannot place a system against these raters, and the
+    honest move is to say so rather than publish a position it does not support.
 
-    Reported at clip level (thousands of paired points, noisy) and at system
-    level (seven points, each an average, far less noisy but n=7). Both, because
-    a strong system-level correlation on seven points is easy to over-read.
+    Reported three ways, because the first one alone is misleading:
+
+      overall AUC     over every clip, including the broken ones
+      cloud-only AUC  with IndicF5 dropped
+
+    The second is the one that matters. A correlation across all systems can be
+    manufactured entirely by a single broken outlier: six systems in a narrow
+    band plus one far below on both axes is a line through a cluster and a dot.
+    It reports a healthy number while having no resolving power anywhere a real
+    decision gets made. IndicF5 is precisely that dot -- 0.53 mean overlap and a
+    14% good-rate against a pack at 0.85-0.89 and 70-87%.
     """
     from scipy import stats
 
@@ -513,16 +560,18 @@ def correlate(rows: list[dict]) -> dict:
     pearson = stats.pearsonr(ours, human)
     spearman = stats.spearmanr(ours, human)
 
-    by_system: dict[str, list[tuple[float, float]]] = {}
+    by_system: dict[str, list[tuple[float, bool]]] = {}
     for r in usable:
         by_system.setdefault(r["system"], []).append(
-            (r["overlap"], r["ratings"]["intelligibility"])
+            (r["overlap"], r["ratings"]["intelligibility"] >= GOOD_RATING)
         )
     systems = {
         name: {
             "clips": len(pairs),
             "our_overlap": sum(p[0] for p in pairs) / len(pairs),
-            "human_intelligibility": sum(p[1] for p in pairs) / len(pairs),
+            # The share of clips a native speaker called intelligible. This is
+            # what the "mean rating" actually was.
+            "human_good_rate": sum(1 for p in pairs if p[1]) / len(pairs),
         }
         for name, pairs in sorted(by_system.items())
     }
@@ -537,10 +586,22 @@ def correlate(rows: list[dict]) -> dict:
     }
     if len(systems) >= 3:
         sys_ours = [s["our_overlap"] for s in systems.values()]
-        sys_human = [s["human_intelligibility"] for s in systems.values()]
+        sys_human = [s["human_good_rate"] for s in systems.values()]
         sys_r = stats.pearsonr(sys_ours, sys_human)
         result["system_pearson_r"] = sys_r.statistic
         result["system_pearson_p"] = sys_r.pvalue
+
+    labels = [r["ratings"]["intelligibility"] >= GOOD_RATING for r in usable]
+    result["good_rate"] = sum(labels) / len(labels)
+    result["auc"] = auc([r["overlap"] for r in usable], labels)
+
+    # The check that decides what may be claimed. See the docstring.
+    cloud = [r for r in usable if r["system"] != "Indic F5"]
+    if cloud:
+        cloud_labels = [r["ratings"]["intelligibility"] >= GOOD_RATING for r in cloud]
+        result["cloud_clips"] = len(cloud)
+        result["cloud_good_rate"] = sum(cloud_labels) / len(cloud_labels)
+        result["cloud_auc"] = auc([r["overlap"] for r in cloud], cloud_labels)
     return result
 
 
@@ -555,15 +616,26 @@ def _score(args: argparse.Namespace) -> int:
     (CACHE / "correlation.json").write_text(json.dumps(stats_out, indent=1))
 
     print(json.dumps({k: v for k, v in stats_out.items() if k != "systems"}, indent=1))
-    print("\nper system (our objective score vs their raters):")
-    print(f"  {'system':22s} {'clips':>6} {'ours':>8} {'human':>8}")
+    print("\ncan our round-trip score predict a native speaker's verdict?")
+    print(
+        f"  all clips      AUC {stats_out['auc']:.3f}   "
+        f"(n={stats_out['clips']}, {stats_out['good_rate']:.0%} rated intelligible)"
+    )
+    if "cloud_auc" in stats_out:
+        print(
+            f"  IndicF5 removed AUC {stats_out['cloud_auc']:.3f}   "
+            f"(n={stats_out['cloud_clips']}, {stats_out['cloud_good_rate']:.0%} rated intelligible)"
+        )
+
+    print("\nper system:")
+    print(f"  {'system':22s} {'clips':>6} {'our overlap':>12} {'human good-rate':>16}")
     for name, row in sorted(
         stats_out.get("systems", {}).items(),
-        key=lambda kv: -kv[1]["human_intelligibility"],
+        key=lambda kv: -kv[1]["human_good_rate"],
     ):
         print(
-            f"  {name:22s} {row['clips']:6d} {row['our_overlap']:8.3f} "
-            f"{row['human_intelligibility']:8.2f}"
+            f"  {name:22s} {row['clips']:6d} {row['our_overlap']:12.3f} "
+            f"{row['human_good_rate']:15.0%}"
         )
     return 0
 
