@@ -175,12 +175,12 @@ def test_one_very_long_sentence_raises_the_requirement():
     assert required_free_gib("क " * 400 + "।") > MIN_FREE_GIB
 
 
-def test_the_floor_covers_the_measured_checkpoint():
-    """Chatterbox measures 3.04 GiB after load. A floor below that would let the
-    wedge this guard exists to prevent happen again --- and it is not a crash, it
-    is the model paging out mid-inference and the request neither finishing nor
-    failing."""
-    assert MIN_FREE_GIB >= 3.04
+def test_the_floor_covers_the_default_checkpoint():
+    """The 8-bit default peaks at 2.77 GiB during generation. A floor below that
+    would let the wedge this guard exists to prevent happen again --- and it is
+    not a crash, it is the model paging out mid-inference and the request neither
+    finishing nor failing."""
+    assert MIN_FREE_GIB >= 2.77
 
 
 # --- reference clip -------------------------------------------------------
@@ -268,3 +268,50 @@ def test_the_engine_is_registered_as_permissively_licensed():
     spec = next(m for m in REGISTRY if "Multilingual" in m.name)
     assert spec.license in PERMISSIVE_LICENSES
     assert spec.measured
+
+
+# --- which checkpoint actually loads ---------------------------------------
+
+
+def test_the_default_is_the_local_8bit_build_when_present(tmp_path, monkeypatch):
+    """8-bit is 1.9x faster than fp32 (RTF 0.63 vs 1.17) on 44% of the memory,
+    at identical quality (93.5% mean round-trip either way). It is not an
+    optimisation to opt into; it is what should run."""
+    from voiceagent.tts import chatterbox_indic as ci
+
+    built = tmp_path / "chatterbox-multilingual-v3-8bit"
+    built.mkdir()
+    monkeypatch.setattr(ci, "LOCAL_QUANTIZED", built)
+    assert ci.resolve_checkpoint() == str(built)
+
+
+def test_it_falls_back_to_fp32_rather_than_failing(tmp_path, monkeypatch):
+    """A build step that can turn into "Hindi is broken" would be a bad trade for
+    1.9x. Slower and hungrier beats absent."""
+    from voiceagent.tts import chatterbox_indic as ci
+
+    monkeypatch.setattr(ci, "LOCAL_QUANTIZED", tmp_path / "absent")
+
+    def explode(**kwargs):
+        raise RuntimeError("no disk space")
+
+    monkeypatch.setattr("voiceagent.tts.quantize.quantize", explode)
+    assert ci.resolve_checkpoint() == ci.CHATTERBOX_REPO
+
+
+def test_build_can_be_declined(tmp_path, monkeypatch):
+    """So a caller that must not spend seven seconds and 900 MB can say so."""
+    from voiceagent.tts import chatterbox_indic as ci
+
+    monkeypatch.setattr(ci, "LOCAL_QUANTIZED", tmp_path / "absent")
+    assert ci.resolve_checkpoint(build=False) == ci.CHATTERBOX_REPO
+
+
+def test_an_explicit_repo_is_not_overridden():
+    """Pinning one is how the fp32-vs-8-bit comparison above was measured."""
+    engine = ChatterboxIndicEngine(repo="some/other-checkpoint")
+    assert engine.repo == "some/other-checkpoint"
+
+
+def test_no_repo_means_resolve_at_load():
+    assert ChatterboxIndicEngine().repo is None

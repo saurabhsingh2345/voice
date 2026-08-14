@@ -29,7 +29,7 @@ Hard constraints the code enforces:
 | STT (Hindi, batch) | working | whisper-large-v3-turbo pinned `hi`, CER 4.8 %, RTF 0.24 |
 | LLM + tool calling | working | Qwen3-4B 4-bit MLX, 2.16 GiB, TTFT 165 ms warm (prefix cache) |
 | TTS English | working | Kokoro-82M, RTF ~0.1, first audio 280 ms streamed |
-| TTS Hindi | working | Chatterbox Multilingual (MIT), RTF 1.24, 94.0 % round-trip |
+| TTS Hindi | working | Chatterbox Multilingual 8-bit (MIT), **RTF 0.63**, 93.5 % round-trip |
 | Live voice loop | working (English) | ~5.5 GiB resident, first audio 1.8–2.4 s |
 | Tools | working | files / shell / HTTP, sandboxed, confirmation-gated |
 | Memory | working | SQLite + Fernet, key in macOS Keychain, wipeable |
@@ -73,10 +73,12 @@ Chatterbox rather than IndicF5 (Phase 12 — licence tree, and it measured bette
 
 - Hindi is **Hindi only**. Chatterbox Multilingual speaks 1 Indic language where
   IndicF5 spoke 11; other Indic scripts raise `UnsupportedLanguage`.
-- Hindi is type-and-listen (RTF 1.24, down from 3.40) — the live loop stays
-  English, but this is now an engineering problem, not a research one.
-- Hindi needs 4.0 GiB free to synthesize, up from 2.5: the checkpoint is 3.04 GiB
-  resident against IndicF5's 1.4 GiB.
+- Hindi is still type-and-listen, but no longer because it is slow: **RTF 0.63**,
+  down from IndicF5's 3.40. What is left is wiring — `orchestration/loop.py`
+  hardcodes `KokoroEngine()` instead of using the router, and the loop's STT is
+  English-only Moonshine.
+- Hindi needs 3.0 GiB free to synthesize, up from IndicF5's 2.5: the 8-bit
+  checkpoint is 1.33 GiB resident, 2.77 GiB peak.
 - Sub-1 s turn latency is **not** met: ~1.8 s to first audio warm, ~2.4 s cold.
 - No acoustic echo cancellation — headphones advised.
 - Desktop app is a launcher, not a self-contained bundle (blocked partly by the
@@ -146,21 +148,25 @@ See `plan.md` for the strategy this now serves, and why it changed.
 - Filters that select on condition (e.g. a flat attention threshold across clips
   of different lengths) bias the comparison they are meant to protect.
 
-## Open measurement, blocked on the machine
+## Hindi is under real time
 
-**Hindi under RTF 1.0 is unresolved, and the blocker is the machine, not the code.**
+Profiled first: T3 (token generation) is ~58 % of synthesis and S3Gen ~42 %, so
+quantizing the transformer was the lever. `voiceagent.tts.quantize` builds an
+8-bit checkpoint from the MIT source in ~7 s, on first load, and that is now the
+default. Community requants exist and all declare no licence, so they cannot go
+in `models.py`.
 
-Profiled: T3 (token generation) is ~58 % of synthesis and S3Gen ~42 %, so
-quantizing the transformer is the lever. `voiceagent.tts.quantize` builds an
-8-bit checkpoint from the MIT source in ~7 s (community requants exist but
-declare no licence, so they cannot go in `models.py`).
+Measured idle, 12 held-out sentences, medians of 3 runs:
 
-Memory is measured and unambiguous: **1.33 GiB resident / 2.77 GiB peak**, against
-fp32's 3.04 / 5.09. Speed is **not** established. The first five held-out
-sentences ran at RTF 0.63–0.95 — under real time — and then the same engine with
-the same seeds measured 6–12 on the rest and stayed there across three repeats.
-That was a virtualization process thrashing the host: load average **537**, 13 GiB
-of swap in use, and Whisper could no longer transcribe 24 short clips inside ten
-minutes.
+| | aggregate RTF | resident | peak | mean overlap | code-mixed |
+| --- | --- | --- | --- | --- | --- |
+| fp32 | 1.17 | 3.04 GiB | 4.55 GiB | 93.5 % | 94.9 % |
+| **8-bit** | **0.63** | **1.33 GiB** | **2.77 GiB** | **93.5 %** | 94.5 % |
 
-Re-run on an idle machine before adopting: `uv run python -m voiceagent.eval.hindi_tts`.
+1.9× faster on 44 % of the memory at identical quality, and every sentence is
+under RTF 1.0.
+
+A caution worth keeping: the first attempt at this measured RTF 6–12 and was
+completely wrong. A virtualization process had the host at load average **537**
+with 13 GiB of swap in use. `voice-doctor` warns about exactly this. Check the
+load average before trusting any timing here.

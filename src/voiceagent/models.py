@@ -209,12 +209,12 @@ REGISTRY: tuple[ModelSpec, ...] = (
         ),
     ),
     ModelSpec(
-        name="Chatterbox Multilingual v3 (MLX)",
+        name="Chatterbox Multilingual v3 (MLX, 8-bit)",
         stage=Stage.TTS,
         license="MIT",
         repo="mlx-community/chatterbox-multilingual-v3",
-        weights_gb=3.04,
-        runtime_overhead_gb=2.05,
+        weights_gb=1.33,
+        runtime_overhead_gb=1.44,
         phase=9,
         default=False,
         measured=True,
@@ -224,15 +224,16 @@ REGISTRY: tuple[ModelSpec, ...] = (
             "MIT) but because running it required `f5-tts`, which drags in "
             "encodec (CC-BY-NC), Unidecode (GPL), frozendict (LGPL-3) and soxr "
             "(LGPL-2.1). That tree is what made voice-doctor exit non-zero. "
-            "Measured 3.04 GiB after load, 5.09 GiB MLX peak during generation "
-            "(cache-inclusive). Quality was measured before the switch, not "
-            "assumed: on the 12 held-out sentences it scores 94.0 % mean "
-            "round-trip overlap against IndicF5's 88.7 %, 95.4 % vs 86.0 % on "
-            "the code-mixed subset, at RTF 1.24 vs 3.40 -- see "
-            "eval_out/chatterbox_spike/FINDINGS.md. The cost is coverage: this "
-            "checkpoint speaks Hindi and no other Indic language, where "
-            "IndicF5 spoke 11. Loaded only for Hindi; NOT co-resident with "
-            "Kokoro or Chatterbox Turbo."
+            "Quantized to 8-bit locally from the MIT fp32 repo on first use "
+            "(tts/quantize.py) -- community requants exist and all declare no "
+            "licence. Measured idle, medians of 3: 1.33 GiB after load, 2.77 "
+            "GiB peak, aggregate RTF 0.63, against fp32's 3.04 / 4.55 / 1.17. "
+            "Quality is unchanged by quantization -- 93.5 % mean round-trip "
+            "overlap either way, against IndicF5's 88.7 % -- and every sentence "
+            "is now under RTF 1.0, so Hindi keeps up with playback. The cost is "
+            "coverage: this checkpoint speaks Hindi and no other Indic "
+            "language, where IndicF5 spoke 11. Loaded only for Hindi; NOT "
+            "co-resident with Kokoro or Chatterbox Turbo."
         ),
     ),
 )

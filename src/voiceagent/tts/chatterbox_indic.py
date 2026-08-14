@@ -18,7 +18,8 @@ project's own round-trip scorer:
     condition     mean overlap   code-mixed   aggregate RTF
     human            90.2 %         91.5 %        --          (metric ceiling)
     IndicF5          88.7 %         86.0 %        3.40
-    Chatterbox       94.0 %         95.4 %        1.24
+    Chatterbox       93.5 %         94.9 %        1.17   (fp32)
+    Chatterbox       93.5 %         94.5 %        0.63   (8-bit, the default)
 
 Better on 9 of 12 sentences, tied on 2, worse on none. The largest gains are
 digits (75 -> 95 %) and mid-sentence code-switching (81 -> 94 %). Read the 94 %
@@ -52,6 +53,7 @@ import asyncio
 import time
 from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import numpy as np
 
@@ -61,7 +63,52 @@ from voiceagent.tts.chunker import SentenceChunker
 #: MIT. Converted to mlx-audio's layout (single model.safetensors with ve./t3./
 #: s3gen. prefixes); the S3 tokenizer is fetched separately from
 #: mlx-community/S3TokenizerV2 by `Model.from_pretrained`.
+#:
+#: The source of truth, but not what runs: see `resolve_checkpoint`.
 CHATTERBOX_REPO = "mlx-community/chatterbox-multilingual-v3"
+
+#: 8-bit, quantized locally from CHATTERBOX_REPO on first use.
+#:
+#: Measured on an idle machine, 12 held-out sentences, medians of 3 runs:
+#:
+#:                  aggregate RTF   resident   peak    mean overlap   code-mixed
+#:     fp32              1.17       3.04 GiB  4.55 GiB     93.5 %       94.9 %
+#:     8-bit             0.63       1.33 GiB  2.77 GiB     93.5 %       94.5 %
+#:
+#: 1.9x faster, 44 % of the memory, and **the same quality** --- identical mean,
+#: and the code-mixed difference is one sentence moving 6 points, well inside the
+#: ±5 of an unseeded sampler. Every sentence is under RTF 1.0, so Hindi synthesis
+#: keeps up with playback for the first time in this project.
+#:
+#: Built locally rather than pulled: four community requants exist and every one
+#: declares **no licence**. A quantization of an MIT model is presumably MIT, and
+#: "presumably" is the word `voice-doctor` exists to remove. See `tts/quantize.py`.
+#:
+#: The `data/` tree is gitignored, so this is a cache, not an artifact. Deleting
+#: it costs seven seconds on the next load.
+LOCAL_QUANTIZED = Path("data/models/chatterbox-multilingual-v3-8bit")
+
+
+def resolve_checkpoint(build: bool = True) -> str:
+    """The checkpoint to load: the local 8-bit build, quantizing it if needed.
+
+    Falls back to the fp32 repo if quantization fails for any reason. That path
+    is slower and needs more headroom, but it always works --- a build step that
+    can turn into "Hindi is broken" would be a bad trade for 1.9x.
+    """
+    if LOCAL_QUANTIZED.exists():
+        return str(LOCAL_QUANTIZED)
+    if not build:
+        return CHATTERBOX_REPO
+    try:
+        from voiceagent.tts.quantize import quantize
+
+        print(f"Quantizing {CHATTERBOX_REPO} to 8-bit (once, ~7s) ...")
+        return str(quantize(bits=8))
+    except Exception as exc:  # noqa: BLE001
+        print(f"Quantization unavailable ({type(exc).__name__}: {exc}); using fp32.")
+        return CHATTERBOX_REPO
+
 
 #: Chatterbox synthesizes at 24 kHz, matching Kokoro and IndicF5 before it.
 SAMPLE_RATE = 24_000
@@ -118,28 +165,29 @@ DEFAULT_SEED = 0
 
 #: Memory this engine needs free before it is safe to synthesize.
 #:
-#: Measured on this machine, `mx.get_peak_memory()`:
+#: Sized on the default 8-bit checkpoint, measured with `mx.get_peak_memory()`
+#: on an idle machine:
 #:
-#:     after load                    3.04 GiB
-#:     peak during one generation    5.09 GiB
+#:     8-bit   1.33 GiB after load   2.77 GiB peak during generation
+#:     fp32    3.04 GiB              4.55 GiB
 #:
 #: Those are MLX's own peaks and they *include its buffer cache*, so they are an
-#: upper bound on pressure rather than a floor. Against that: the Phase 0 spike
-#: ran 15 generations with ~4.2 GiB of system memory free and never faltered.
-#: 4.0 sits between the two --- above what was observed to work, below the
-#: cache-inclusive peak.
+#: upper bound on pressure rather than a floor. 3.0 sits just above the 8-bit
+#: peak.
 #:
-#: This is higher than IndicF5's 2.5, and that is a real cost of the switch:
-#: Chatterbox's checkpoint is 2.7 GB against IndicF5's 1.4 GB. On a machine with
-#: 3 GiB free, Hindi that used to synthesize will now be refused. Refusing is
-#: still better than the alternative this guard exists to prevent, which is not
-#: an error but a wedge --- the model pages out mid-inference and the request
-#: neither finishes nor fails.
+#: This briefly stood at 4.0, sized for fp32, which was higher than IndicF5's 2.5
+#: and would have refused Hindi on a busy machine that used to manage it.
+#: Quantizing took that cost back and then some.
+#:
+#: The fp32 fallback in `resolve_checkpoint` needs more than this floor allows.
+#: Accepted: the fallback only fires if quantization fails, and refusing early is
+#: better than the wedge this guard exists to prevent --- the model paging out
+#: mid-inference, so the request neither finishes nor fails.
 #:
 #: HONESTY NOTE: GIB_PER_EXTRA_BATCH is inherited from the IndicF5 envelope and
 #: has NOT been re-measured against Chatterbox's allocator. Treat it the way
 #: `models.py` treats `measured=False`.
-MIN_FREE_GIB = 4.0
+MIN_FREE_GIB = 3.0
 CHARS_PER_BATCH = 100
 GIB_PER_EXTRA_BATCH = 0.5
 
@@ -266,7 +314,7 @@ class ChatterboxIndicEngine(TTSEngine):
 
     def __init__(
         self,
-        repo: str = CHATTERBOX_REPO,
+        repo: str | None = None,
         reference_audio: np.ndarray | None = None,
         reference_text: str = "",
         reference_sample_rate: int = SAMPLE_RATE,
@@ -275,6 +323,8 @@ class ChatterboxIndicEngine(TTSEngine):
         temperature: float = TEMPERATURE,
         min_p: float = MIN_P,
     ) -> None:
+        #: None means "resolve at load", which is what picks the 8-bit build.
+        #: Pass an explicit path or repo id to pin one, e.g. to compare them.
         self.repo = repo
         #: Chatterbox is a cloning model: it needs a reference clip. Unlike
         #: IndicF5 it does *not* need that clip's transcript.
@@ -339,6 +389,8 @@ class ChatterboxIndicEngine(TTSEngine):
         import mlx.core as mx
         from mlx_audio.tts.utils import load_model
 
+        if self.repo is None:
+            self.repo = resolve_checkpoint()
         mx.reset_peak_memory()
         self._model = load_model(self.repo)
         self._conds = None
