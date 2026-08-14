@@ -3,8 +3,8 @@
 Living summary of the project. Amend this after each change; keep it concise —
 the README holds the long-form evidence, this holds the current state.
 
-Last updated: 2026-08-14 (Phase 2 evidence: a Hindi quality verdict, and the
-measured limits of the scorer that produced it — `eval_out/arena/FINDINGS.md`)
+Last updated: 2026-08-14 (Phase 3 outreach material in `outreach/`, built on the
+Phase 2 evidence — `eval_out/arena/FINDINGS.md`)
 
 ## What it is
 
@@ -41,6 +41,7 @@ Hard constraints the code enforces:
 | Blind A/B listening test | **built, unrated** | 12 held-out sentences, real / vocoded / ours |
 | Quality position (Hindi) | **measured** | inside the band of 6 cloud systems on arena code-mixed; 92% paired wins over IndicF5 |
 | Licence audit | **green** | `voice-doctor` exits 0 with every extra installed |
+| Outreach material | **written, unsent** | `outreach/` — claims register, one-pager, emails, call guide, pricing, target filter |
 
 Entry points: `voice-doctor`, `voice-web`, `voice-chat`. 395 tests.
 
@@ -135,9 +136,15 @@ See `plan.md` for the strategy this now serves, and why it changed.
 1. **Sign and notarise the `.app`** — the bundle is built and verified running
    outside any checkout; Gatekeeper is what is left. Needs Apple Developer
    credentials, so it cannot be done unattended.
-2. **Phase 3, the first customer conversation.** Phase 2's evidence is in
-   `eval_out/arena/FINDINGS.md`: the spec sheet, the licence audit, and now a
-   quality position that is narrow enough to defend.
+2. **Record the offline demo**, network physically off, airplane mode in frame.
+   The last unfinished Phase 2 item, and now the blocker on everything in
+   `outreach/` — every template earns its reply on a claim a video proves and a
+   paragraph cannot.
+3. **Phase 3, the first customer conversation.** The material is written and
+   unsent in `outreach/`; read `outreach/CLAIMS.md` before quoting any number
+   from this project to anyone. What remains is not writing: build the ten
+   names against the filter in `outreach/TARGETS.md`, send the AI4Bharat letter
+   (no sales cycle, send it regardless), and apply to the IndiaAI Compute Portal.
 
 The spec sheet (old item 1) shipped; see `eval_out/SPECSHEET.md`.
 
