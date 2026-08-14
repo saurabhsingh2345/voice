@@ -4,28 +4,26 @@
     "machine": "arm64",
     "cpus": 12,
     "ram_gib": 18.0,
-    "free_gib": 6.46,
-    "swap_used_gib": 13.72,
-    "load_1m": 3.0,
-    "calibration_ms": 19.4
+    "free_gib": 7.07,
+    "swap_used_gib": 16.56,
+    "load_1m": 4.1,
+    "calibration_ms": 17.2
   },
   "machine_quiet": true,
-  "machine_note": "quiet enough to measure (0.25 load per core, 6.46 GiB free)",
+  "machine_note": "quiet enough to measure (0.34 load per core, 7.07 GiB free)",
   "licences": {
     "model_violations": [],
     "dependency_violations": [],
-    "accepted_exceptions": [
-      "num2words"
-    ],
+    "accepted_exceptions": [],
     "clean": true
   },
   "hindi_tts": {
     "engine": "Chatterbox Multilingual v3 (MLX, 8-bit)",
     "checkpoint": "data/models/chatterbox-multilingual-v3-8bit",
-    "load_s": 4.2,
+    "load_s": 3.7,
     "resident_gib": 1.33,
-    "rtf_median": 0.7,
-    "rtf_worst": 0.95,
+    "rtf_median": 0.68,
+    "rtf_worst": 0.83,
     "sentences": 12,
     "audio_seconds": 50.5
   },
@@ -34,7 +32,7 @@
     "load_s": 1.5,
     "resident_gib": 2.31,
     "cer_percent": 9.2,
-    "rtf_median": 0.16,
+    "rtf_median": 0.15,
     "clips": 12
   },
   "roundtrip": {

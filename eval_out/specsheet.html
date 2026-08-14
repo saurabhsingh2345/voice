@@ -198,10 +198,12 @@
     <div class="label">Measured spec sheet &middot; regenerated, not transcribed</div>
     <h1>Local Hindi voice agent, on one laptop</h1>
     <p class="lede col">
-      Speech in, reasoning with tools, speech out — entirely on device, with every
-      dependency under a permissive licence. Every figure below was measured by
-      running <code>voiceagent.eval.specsheet</code> on the machine described, and
-      the page is regenerated from its output rather than typed.
+      Speech in, reasoning with tools, speech out — entirely on device, in Hindi
+      and English, with every dependency under a permissive licence and no
+      exceptions. Ships as a 1.3 GB application that carries its own Python
+      runtime. Every figure below was measured by running
+      <code>voiceagent.eval.specsheet</code> on the machine described, and the
+      page is regenerated from its output rather than typed.
     </p>
     <div class="provenance">
       <div><span class="label">Host</span><span class="num">Apple silicon, 12 cores, 18.0 GiB</span></div>
@@ -224,13 +226,13 @@
             <h3>Synthesis</h3>
             <span class="row-sub">Chatterbox Multilingual v3, 8-bit &middot; 1.33 GiB resident</span>
           </div>
-          <div class="value num">0.70<small>RTF median</small></div>
+          <div class="value num">0.68<small>RTF median</small></div>
         </div>
-        <div class="bar" role="img" aria-label="Real-time factor 0.70 median, 0.95 worst case, against a real-time limit of 1.0">
-          <div class="fill" style="width:70%"></div>
+        <div class="bar" role="img" aria-label="Real-time factor 0.68 median, 0.83 worst case, against a real-time limit of 1.0">
+          <div class="fill" style="width:68%"></div>
           <div class="ceil" style="left:100%" data-note="real time"></div>
         </div>
-        <div class="scale"><span class="num">0.0</span><span class="num">worst case 0.95</span><span class="num">1.0</span></div>
+        <div class="scale"><span class="num">0.0</span><span class="num">worst case 0.83</span><span class="num">1.0</span></div>
       </div>
 
       <div class="row">
@@ -363,7 +365,7 @@
         <tbody>
           <tr><td>Model licence violations</td><td>0</td></tr>
           <tr><td>Dependency tree violations</td><td>0</td></tr>
-          <tr><td>Recorded exceptions</td><td>1 &mdash; num2words, LGPL</td></tr>
+          <tr><td>Recorded exceptions</td><td>0</td></tr>
         </tbody>
       </table>
     </div>
@@ -392,6 +394,7 @@
         <li><strong>Listening is a choice.</strong> The loop hears English by default; Hindi input costs about 2.3 GiB against 228 MiB. On an 18 GiB machine that is a flag, not a default.</li>
         <li><strong>No quality verdict.</strong> Intelligibility and latency are measured. Naturalness is not.</li>
         <li><strong>Sub-second turns are not met.</strong> Roughly 1.8 s to first audio, warm.</li>
+        <li><strong>The desktop app is unsigned.</strong> It runs with no checkout, no package manager and no virtual environment &mdash; but Gatekeeper will refuse it on another Mac until it is signed and notarised.</li>
       </ul>
     </div>
   </section>
