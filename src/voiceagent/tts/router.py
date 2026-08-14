@@ -188,6 +188,33 @@ class TTSRouter:
 # --- default wiring -------------------------------------------------------
 
 
+def pick_indic_profile(profiles: list):
+    """Choose the enrolled voice to clone Hindi from.
+
+    Prefers a speaker whose enrolment clip is *in* an Indic language, and the
+    reason is the clone rather than the text. Chatterbox conditions on the
+    reference audio alone, so a voice enrolled by reading English gives Hindi
+    spoken with that speaker's English phonetics --- the accent of the enrolment
+    survives into a language it was never recorded in. The transcript is the only
+    cheap signal for which language a clip is in, so it is used as a proxy for
+    the audio rather than for its own sake.
+
+    Falls back to the first profile when no clip is Indic: a same-speaker clone
+    with the wrong accent still beats refusing to speak, and the alternative
+    would be silence on a machine that has an enrolled voice sitting right there.
+    Returns None only when nothing is enrolled at all.
+    """
+    from voiceagent.text.detect import detect
+
+    if not profiles:
+        return None
+    for profile in profiles:
+        text = getattr(profile, "reference_text", "") or ""
+        if text and detect(text).is_indic:
+            return profile
+    return profiles[0]
+
+
 def build_default_router(keep_resident: bool = False) -> TTSRouter:
     """English through Kokoro, Indic languages through an Indic-native engine.
 
@@ -235,9 +262,8 @@ def build_default_router(keep_resident: bool = False) -> TTSRouter:
             from voiceagent.voice_clone.store import VoiceProfileStore
 
             store = VoiceProfileStore()
-            profiles = store.list()
-            if profiles:
-                profile = profiles[0]
+            profile = pick_indic_profile(store.list())
+            if profile is not None:
                 audio, rate = sf.read(
                     io.BytesIO(store.reference_audio(profile.profile_id)), dtype="float32"
                 )

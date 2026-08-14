@@ -30,7 +30,7 @@ Hard constraints the code enforces:
 | LLM + tool calling | working | Qwen3-4B 4-bit MLX, 2.16 GiB, TTFT 165 ms warm (prefix cache) |
 | TTS English | working | Kokoro-82M, RTF ~0.1, first audio 280 ms streamed |
 | TTS Hindi | working | Chatterbox Multilingual 8-bit (MIT), **RTF 0.63**, 93.5 % round-trip |
-| Live voice loop | working (bilingual **output**) | English in; replies spoken in en or hi |
+| Live voice loop | working, **bilingual** | `voice-chat --language en\|hi\|auto` |
 | Tools | working | files / shell / HTTP, sandboxed, confirmation-gated |
 | Memory | working | SQLite + Fernet, key in macOS Keychain, wipeable |
 | Voice cloning (zero-shot) | working | Chatterbox Turbo (MIT), RTF ~1.6, consent required |
@@ -73,10 +73,15 @@ Chatterbox rather than IndicF5 (Phase 12 — licence tree, and it measured bette
 
 - Hindi is **Hindi only**. Chatterbox Multilingual speaks 1 Indic language where
   IndicF5 spoke 11; other Indic scripts raise `UnsupportedLanguage`.
-- The live loop is bilingual on **output only**. It speaks Hindi replies now
-  (RTF 0.97 streamed, 100 % round trip on a two-sentence reply), but you still
-  talk to it in English: the loop's STT is Moonshine, which is English-only.
-  Hindi *input* needs whisper-large-v3-turbo in the loop — a separate change.
+- The live loop hears Hindi only with `--language hi` or `auto`; the default is
+  English. Moonshine is English-only and does not *fail* on Hindi, it invents
+  English — a real Hindi recording came back as "I have given a documentary for
+  many years". Whisper turbo costs ~2.3 GiB against Moonshine's 228 MiB, which is
+  why it is a flag and not the default.
+- `--language auto` inherits Whisper's short-clip language-ID problem: a one-word
+  reply may be transcribed in the wrong script. Pinning is more reliable.
+- Streamed Hindi sits at RTF ~0.86–1.12 warm — real time with no margin, because
+  the stream path is deliberately ungrouped. Batch is 0.63.
 - **Hindi needs an enrolled voice.** Chatterbox is a cloning model with no
   built-in speaker, unlike Kokoro, so Hindi is silent until a voice is enrolled
   in `voice-web`. No default speaker ships: it would be a real person's voice
@@ -116,10 +121,9 @@ See `plan.md` for the strategy this now serves, and why it changed.
 
 **Next, in order**
 
-1. **Hindi input.** The loop speaks Hindi but cannot hear it — Moonshine is
-   English-only. Swapping in whisper-large-v3-turbo (CER 4.8 %, RTF 0.24) for
-   Indic utterances completes the bilingual loop. This is the last piece between
-   here and "a Hindi agent you can talk to".
+1. **Publish the measured spec sheet** (plan.md §6) — latency, RTF per language,
+   resident memory per configuration, CER, round-trip against its real ceiling.
+   Everything it needs is now measured.
 2. **Self-contained desktop bundle** — replace `num2words` with a Hindi/English
    number routine we own (needed for lakh/crore anyway) and drop the last
    recorded licence exception.

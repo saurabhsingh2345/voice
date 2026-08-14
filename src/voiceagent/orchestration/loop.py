@@ -74,6 +74,30 @@ class LoopConfig:
     auto_approve_tools: bool = False
     """Skip the confirmation prompt. For scripted runs only -- never a default."""
 
+    listen_language: str = "en"
+    """Which language the loop listens for: "en", "hi", or "auto".
+
+    Output has been bilingual since the router replaced the bare Kokoro engine --
+    the agent can reply in Hindi and you hear it. This is the other half, and it
+    is a real choice rather than a default because the three options trade
+    memory, latency and reliability differently:
+
+      en    Moonshine.       228 MiB, RTF 0.12, streaming. English only.
+      hi    Whisper turbo pinned to Hindi. ~1.6 GiB, RTF 0.24, batch.
+                             CER 4.8 % measured. Cannot hear English.
+      auto  Whisper turbo, language detected per utterance. Same cost as `hi`,
+                             and genuinely bilingual -- but see the caveat.
+
+    THE `auto` CAVEAT, which this project has already been bitten by once.
+    Whisper's language identification is unreliable on short audio: a 1.7 s Hindi
+    clip auto-detected as *Korean* in the TTS round-trip harness, and the fix
+    there was to stop believing the label below 2.5 s (see
+    `eval.roundtrip.SHORT_CLIP_SECONDS`). The same failure applies to a short
+    spoken reply -- "बिल्कुल" on its own may be transcribed as nonsense in the
+    wrong script. Pinning is more reliable than detecting whenever the language
+    is actually known, so `auto` is offered, not defaulted to.
+    """
+
 
 class VoiceLoop:
     def __init__(self, config: LoopConfig | None = None) -> None:
@@ -94,9 +118,23 @@ class VoiceLoop:
 
     # --- setup ------------------------------------------------------------
 
+    def _build_stt(self):
+        """Pick the speech recogniser. See LoopConfig.listen_language."""
+        language = self.config.listen_language
+        if language == "en":
+            from voiceagent.stt.moonshine_engine import MoonshineEngine
+
+            return MoonshineEngine(), "moonshine, English only"
+
+        from voiceagent.stt.mlx_whisper_engine import MLXWhisperEngine
+
+        if language == "auto":
+            # None means detect per utterance.
+            return MLXWhisperEngine(language=None), "whisper turbo, language detected"
+        return MLXWhisperEngine(language=language), f"whisper turbo, pinned {language}"
+
     def load(self) -> None:
         from voiceagent.llm.mlx_engine import MLXLLMEngine
-        from voiceagent.stt.moonshine_engine import MoonshineEngine
         from voiceagent.tools.files import ListFilesTool, ReadFileTool, Sandbox, WriteFileTool
         from voiceagent.storage.db import EncryptedStore
         from voiceagent.tools.http import HttpRequestTool
@@ -109,8 +147,8 @@ class VoiceLoop:
         console.print("[dim]loading VAD...[/]")
         self.vad.load()
 
-        console.print("[dim]loading STT (moonshine)...[/]")
-        self.stt = MoonshineEngine()
+        self.stt, stt_label = self._build_stt()
+        console.print(f"[dim]loading STT ({stt_label})...[/]")
         self.stt.load()
 
         console.print("[dim]loading LLM (qwen3-4b)...[/]")
@@ -349,12 +387,24 @@ def main() -> int:
         action="store_true",
         help="run write/shell/network tools without asking (scripted runs only)",
     )
+    parser.add_argument(
+        "--language",
+        choices=("en", "hi", "auto"),
+        default="en",
+        help=(
+            "what to listen for. en = Moonshine (228 MiB, fastest, English only); "
+            "hi = Whisper turbo pinned to Hindi (~1.6 GiB); auto = Whisper turbo "
+            "detecting per utterance (bilingual, but unreliable on very short "
+            "replies). Speaking is bilingual either way -- this only sets hearing."
+        ),
+    )
     args = parser.parse_args()
 
     loop = VoiceLoop(
         LoopConfig(
             allow_barge_in=not args.no_barge_in,
             auto_approve_tools=args.auto_approve_tools,
+            listen_language=args.language,
         )
     )
     loop.load()
