@@ -38,6 +38,22 @@ import re
 #: English loanwords by their established Hindi spelling. Lowercase keys.
 #: These are the spellings Hindi speakers use, which a transliterator cannot
 #: derive: "feature" -> फ़ीचर depends on knowing the vowel is long.
+#:
+#: The rule-based fallback below is "a floor, not a solution": it produces
+#: something pronounceable for any Latin word, and something *right* only by
+#: luck. Every entry here is a word the fallback would otherwise guess at, and
+#: the measured cost of guessing is real -- transliterating before synthesis
+#: moved the code-mixed held-out sentence from 94 % to 98 % round-trip overlap.
+#:
+#: Grouped by domain rather than alphabetically, because the useful question
+#: when extending this is "what does this vertical talk about" and not "what
+#: comes after M".
+#:
+#: AUTHORSHIP CAVEAT, as in `train/prompts.py` and `eval/heldout.py`: the
+#: spellings below were written by the assistant, not a native speaker. They
+#: follow common usage, but a Hindi speaker should read the list -- a wrong
+#: spelling here is worse than no entry, because it silently overrides the
+#: fallback and is never revisited.
 LOANWORDS: dict[str, str] = {
     # communication / office
     "email": "ईमेल",
@@ -138,6 +154,156 @@ LOANWORDS: dict[str, str] = {
     "order": "ऑर्डर",
     "address": "एड्रेस",
     "number": "नंबर",
+
+    # --- banking and money -----------------------------------------------
+    # The vertical `plan.md` puts first: BFSI is where "the data cannot leave
+    # the building" is a procurement rule rather than a preference, so this is
+    # the vocabulary a demo there actually needs.
+    "loan": "लोन",
+    "interest": "इंटरेस्ट",
+    "credit": "क्रेडिट",
+    "debit": "डेबिट",
+    "card": "कार्ड",
+    "balance": "बैलेंस",
+    "transfer": "ट्रांसफ़र",
+    "statement": "स्टेटमेंट",
+    "insurance": "इंश्योरेंस",
+    "policy": "पॉलिसी",
+    "premium": "प्रीमियम",
+    "claim": "क्लेम",
+    "branch": "ब्रांच",
+    "cheque": "चेक",
+    "transaction": "ट्रांज़ैक्शन",
+    "refund": "रिफ़ंड",
+    "deposit": "डिपॉज़िट",
+    "savings": "सेविंग्स",
+    "salary": "सैलरी",
+    "tax": "टैक्स",
+    "invoice": "इनवॉइस",
+    "budget": "बजट",
+    "fund": "फ़ंड",
+    "investment": "इन्वेस्टमेंट",
+    "installment": "इंस्टॉलमेंट",
+    "limit": "लिमिट",
+    "penalty": "पेनल्टी",
+    "verification": "वेरिफ़िकेशन",
+    "application": "एप्लिकेशन",
+    "approval": "अप्रूवल",
+    "form": "फ़ॉर्म",
+    "signature": "सिग्नेचर",
+    "customer": "कस्टमर",
+    "service": "सर्विस",
+    "support": "सपोर्ट",
+    "complaint": "कंप्लेंट",
+    "request": "रिक्वेस्ट",
+    "status": "स्टेटस",
+
+    # --- health ------------------------------------------------------------
+    "medicine": "मेडिसिन",
+    "tablet": "टैबलेट",
+    "appointment": "अपॉइंटमेंट",
+    "clinic": "क्लिनिक",
+    "test": "टेस्ट",
+    "patient": "पेशेंट",
+    "treatment": "ट्रीटमेंट",
+    "surgery": "सर्जरी",
+    "nurse": "नर्स",
+    "emergency": "इमरजेंसी",
+    "prescription": "प्रिस्क्रिप्शन",
+    "checkup": "चेकअप",
+    "injection": "इंजेक्शन",
+
+    # --- education ---------------------------------------------------------
+    "class": "क्लास",
+    "teacher": "टीचर",
+    "student": "स्टूडेंट",
+    "exam": "एग्ज़ाम",
+    "subject": "सब्जेक्ट",
+    "chapter": "चैप्टर",
+    "question": "क्वेश्चन",
+    "answer": "आंसर",
+    "notes": "नोट्स",
+    "admission": "एडमिशन",
+    "homework": "होमवर्क",
+    "course": "कोर्स",
+    "degree": "डिग्री",
+    "result": "रिजल्ट",
+    "marks": "मार्क्स",
+    "syllabus": "सिलेबस",
+    "practice": "प्रैक्टिस",
+    "assignment": "असाइनमेंट",
+    "library": "लाइब्रेरी",
+
+    # --- shops, orders, logistics ------------------------------------------
+    "price": "प्राइस",
+    "discount": "डिस्काउंट",
+    "delivery": "डिलीवरी",
+    "shop": "शॉप",
+    "product": "प्रोडक्ट",
+    "quality": "क्वालिटी",
+    "stock": "स्टॉक",
+    "bill": "बिल",
+    "cash": "कैश",
+    "offer": "ऑफ़र",
+    "brand": "ब्रांड",
+    "size": "साइज़",
+    "model": "मॉडल",
+
+    # --- travel --------------------------------------------------------------
+    "station": "स्टेशन",
+    "flight": "फ़्लाइट",
+    "hotel": "होटल",
+    "airport": "एयरपोर्ट",
+    "platform": "प्लेटफ़ॉर्म",
+    "booking": "बुकिंग",
+    "seat": "सीट",
+    "luggage": "लगेज",
+    "driver": "ड्राइवर",
+    "road": "रोड",
+    "traffic": "ट्रैफ़िक",
+    "signal": "सिग्नल",
+    "parking": "पार्किंग",
+    "license": "लाइसेंस",
+
+    # --- work ----------------------------------------------------------------
+    "manager": "मैनेजर",
+    "target": "टारगेट",
+    "review": "रिव्यू",
+    "feedback": "फ़ीडबैक",
+    "training": "ट्रेनिंग",
+    "interview": "इंटरव्यू",
+    "contract": "कॉन्ट्रैक्ट",
+    "department": "डिपार्टमेंट",
+    "staff": "स्टाफ़",
+    "shift": "शिफ़्ट",
+    "experience": "एक्सपीरियंस",
+    "company": "कंपनी",
+    "business": "बिज़नेस",
+    "plan": "प्लान",
+    "process": "प्रोसेस",
+    "task": "टास्क",
+    "list": "लिस्ट",
+    "group": "ग्रुप",
+
+    # --- using the app itself ------------------------------------------------
+    # What a user says *to* this assistant, which is the one domain guaranteed
+    # to come up no matter which vertical it is sold into.
+    "search": "सर्च",
+    "save": "सेव",
+    "delete": "डिलीट",
+    "share": "शेयर",
+    "click": "क्लिक",
+    "install": "इंस्टॉल",
+    "backup": "बैकअप",
+    "login": "लॉगिन",
+    "logout": "लॉगआउट",
+    "profile": "प्रोफ़ाइल",
+    "notification": "नोटिफ़िकेशन",
+    "microphone": "माइक्रोफ़ोन",
+    "speaker": "स्पीकर",
+    "recording": "रिकॉर्डिंग",
+    "voice": "वॉइस",
+    "language": "लैंग्वेज",
 }
 
 #: Romanized Hindi. Users type this, and it is not English -- transliterating it

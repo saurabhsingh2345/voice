@@ -313,7 +313,27 @@ metric's ceiling, not "sounds better" — intelligibility is not naturalness.
 only; the rest now raise `UnsupportedLanguage`), the per-voice fine-tuning path,
 and 1.5 GiB of headroom (`MIN_FREE_GIB` 2.5 → 4.0).
 
-## 5. Phase 1 — Make the local agent the product (4–6 weeks)
+## 5. Phase 1 — Make the local agent the product — **DONE**
+
+All five ship-blockers below are closed. `voice-doctor` exits 0, 529 tests pass,
+and the measured state is in `eval_out/SPECSHEET.md`:
+
+| | before | now |
+| --- | --- | --- |
+| Licence audit | failing | **clean**, zero exceptions |
+| Hindi TTS | RTF 3.40 | **RTF 0.63** (0.70 median idle) |
+| Live loop | English only | **bilingual**, both directions |
+| Qwen3 repetition | ~1 in 80, unbounded | detected and stopped |
+| Desktop app | launcher needing a checkout | **1.3 GB self-contained `.app`** |
+| Loanword table | 96 entries | **227**, +4.2 pts on code-mixed |
+
+Two things are deliberately still open and named rather than glossed: the `.app`
+is **unsigned**, so Gatekeeper refuses it on another Mac; and there is still **no
+quality verdict** — intelligibility and latency are measured, naturalness is not.
+
+The original plan for this phase follows.
+
+### The original ship-blockers
 
 The gap between this repo and a product is not voice quality. It is that
 `whatwehave.md` describes a launcher, an English-only live loop, and a repetition

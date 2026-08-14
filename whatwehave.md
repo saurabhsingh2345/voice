@@ -107,8 +107,11 @@ Chatterbox rather than IndicF5 (Phase 12 — licence tree, and it measured bette
   T3 tokens are bit-identical, audio differs by ~1.2e-07 (Metal reduction order).
 - Round-trip intelligibility ceiling is ~90 %, not 100 % — Whisper's spelling
   vs the transliterator's. Older README numbers were read against an implicit 100.
-- Latin→Devanagari fallback is a floor, not a solution; unlisted English words are
-  approximated. Add frequent words to the table.
+- Latin→Devanagari fallback is still a floor for *unlisted* words. The table is
+  now 227 entries covering banking, health, education, logistics and the app's
+  own vocabulary; measured +4.2 points of round-trip overlap on code-mixed
+  sentences from those domains (91.2 % → 95.4 %). Spellings are
+  assistant-authored and want a native speaker's read.
 - Memory encryption is weaker than SQLCipher: schema, row counts, timestamps stay
   visible; recall decrypts and scores in Python (wrong at large scale).
 - Qwen3's repetition loop is bounded, not eliminated: sampling now uses Qwen's
@@ -133,8 +136,8 @@ See `plan.md` for the strategy this now serves, and why it changed.
 **Later**
 
 - Acoustic echo cancellation, so speakers work without barge-in false positives.
-- Grow the loanword transliteration table from real code-mixed usage —
-  `translit_en` still measurably helps even though Chatterbox takes raw Latin.
+- Have a native Hindi speaker review the 227 loanword spellings. A wrong entry
+  silently overrides the fallback and is never revisited.
 - More Indic languages. No longer free via script-detect → engine-route: it needs
   a checkpoint that speaks them.
 
