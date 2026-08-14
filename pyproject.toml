@@ -84,6 +84,20 @@ indic = [
     "scipy>=1.11",      # build_benchmark.py resamples the benchmark conditions to
                         # one rate (BSD-3-Clause, and chosen over soxr, which is LGPL)
 ]
+# Phase 2 evidence -- scoring against AI4Bharat's SpeechArenaBench.
+#
+# The Hindi config is 32.5 GiB because every pairwise row embeds both clips, and
+# the whole dataset is 241 GiB. We want the text and the votes, which are a few
+# MiB of that. pyarrow reads Parquet column-wise over HTTP range requests, so
+# projecting to the text columns downloads the column chunks and nothing else --
+# that is the entire reason this dependency is here, and it is Apache-2.0.
+#
+# `datasets` would have been the obvious library and was rejected: it materializes
+# whole splits before you can filter, which is the 32.5 GiB we are avoiding.
+arena = [
+    "pyarrow>=18",
+    "huggingface-hub>=0.26",
+]
 
 [project.scripts]
 voice-doctor = "voiceagent.diagnostics.doctor:main"
