@@ -28,3 +28,6 @@ eval_out/
 
 # Rust build artifacts (the Tauri target dir is ~1.5 GB)
 desktop/src-tauri/target/
+
+# Scratch: list of containers that were running, written during a benchmark run.
+.docker-was-running.txt
