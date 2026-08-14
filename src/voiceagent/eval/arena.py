@@ -184,6 +184,50 @@ def _filesystem():
     return HfFileSystem()
 
 
+#: Seconds to wait on a single shard read before giving up and retrying.
+#:
+#: Not a guess. The 70-shard fetch hung twice with an ESTABLISHED TCP connection
+#: to the CDN delivering 880 bytes/second -- a dead socket that neither side
+#: closed, with the process parked in `_ssl__SSLSocket_read` inside pyarrow's
+#: footer read. There is no timeout anywhere in that stack by default, so the
+#: job waits forever and looks identical to a slow one. A cold shard read takes
+#: about 8 seconds, so this is generous and still bounds the failure.
+SHARD_TIMEOUT_SECONDS = 120
+SHARD_ATTEMPTS = 4
+
+
+def _read_shard(fs, pq, path: str, columns: list[str]) -> list[dict]:
+    """Read one shard's columns, retrying a stalled connection.
+
+    The read runs on a worker thread so a hung socket can be abandoned. The
+    thread itself cannot be killed and may linger blocked on the dead
+    connection, which is accepted: it holds one socket and no lock, and the
+    process exits normally once the useful work is done.
+    """
+    import concurrent.futures as futures
+
+    last: Exception | None = None
+    for attempt in range(1, SHARD_ATTEMPTS + 1):
+        pool = futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            job = pool.submit(
+                lambda: pq.ParquetFile(fs.open(path, "rb")).read(columns=columns).to_pylist()
+            )
+            return job.result(timeout=SHARD_TIMEOUT_SECONDS)
+        except futures.TimeoutError as exc:
+            last = exc
+            print(f"    stalled after {SHARD_TIMEOUT_SECONDS}s, retry {attempt}", flush=True)
+        except Exception as exc:  # transient 5xx / reset connection
+            last = exc
+            print(f"    {type(exc).__name__}, retry {attempt}", flush=True)
+        finally:
+            # Do not wait: the point of the timeout is not to block on the
+            # thread we just gave up on.
+            pool.shutdown(wait=False)
+
+    raise RuntimeError(f"{path} failed after {SHARD_ATTEMPTS} attempts") from last
+
+
 def _ratings(blob: dict | None, side: str) -> dict[str, int]:
     if not blob:
         return {}
@@ -191,8 +235,16 @@ def _ratings(blob: dict | None, side: str) -> dict[str, int]:
     return {axis: inner[axis] for axis in AXES if isinstance(inner.get(axis), int)}
 
 
-def stream_votes(limit_shards: int | None = None) -> Iterator[Vote]:
-    """Yield every Hindi vote, audio columns never requested."""
+def stream_votes(limit_shards: int | None = None, *, progress: bool = True) -> Iterator[Vote]:
+    """Yield every Hindi vote, audio columns never requested.
+
+    Slower than its byte count suggests, and worth knowing why before assuming
+    it has hung: projecting to the text columns means fsspec issues a separate
+    authenticated range request per column chunk per shard, so the cost is
+    thousands of HTTPS round-trips rather than bandwidth. Measured ~20 minutes
+    for all 70 shards while the local HF cache grew by 28 KB -- that 28 KB is
+    the proof it is range-reading and not quietly pulling 32.5 GiB.
+    """
     import pyarrow.parquet as pq
 
     fs = _filesystem()
@@ -205,9 +257,23 @@ def stream_votes(limit_shards: int | None = None) -> Iterator[Vote]:
         "preference_model",
         "fine_grained_eval",
     ]
-    for path in _shard_paths()[:limit_shards]:
-        table = pq.ParquetFile(fs.open(path, "rb")).read(columns=columns)
-        rows = table.to_pylist()
+    paths = _shard_paths()[:limit_shards]
+    for index, path in enumerate(paths, 1):
+        # Per-shard cache. A 70-shard fetch over a link that stalls is a job
+        # that will be interrupted, and losing 20 minutes of completed shards to
+        # the 60th one hanging is the difference between a tool that finishes
+        # and one that is restarted all evening.
+        part = CACHE / "shards" / f"{LANGUAGE}-{index:03d}.json"
+        part.parent.mkdir(parents=True, exist_ok=True)
+        if part.exists():
+            rows = json.loads(part.read_text())
+            if progress:
+                print(f"  shard {index}/{len(paths)}: {len(rows)} rows (cached)", flush=True)
+        else:
+            rows = _read_shard(fs, pq, path, columns)
+            part.write_text(json.dumps(rows, ensure_ascii=False))
+            if progress:
+                print(f"  shard {index}/{len(paths)}: {len(rows)} rows", flush=True)
         for row in rows:
             outcome = parse_preference(
                 row.get("preference_model", ""), row["model_a"], row["model_b"]
@@ -245,6 +311,231 @@ def comparisons_for(votes: list[Vote], subset: str | None = None) -> list[Compar
         for v in votes
         if subset is None or v.subset == subset
     ]
+
+
+@dataclass(frozen=True)
+class Clip:
+    """One system's rendering of one sentence, with the rating a human gave it.
+
+    The unit of the calibration is the clip, not the system. That is forced by
+    the data and it is also the stronger design: sentences are almost never
+    reused across comparisons (712 distinct sentences in the first 717 votes),
+    so there is no matched sentence set to put seven systems on. Pairing each
+    clip with its own rater's score sidesteps that entirely and gives thousands
+    of paired points instead of seven.
+    """
+
+    clip_id: str
+    system: str
+    sentence: str
+    subset: str
+    ratings: dict[str, int]
+    wav: str
+
+
+def harvest_clips(target: int, *, seed: int = 0) -> list[Clip]:
+    """Download audio for `target` clips, spread across shards.
+
+    One row group per shard rather than many row groups from one shard. The
+    arena samples its pairs randomly, so any single shard is a thin and uneven
+    draw over the seven systems -- shard 0 alone has 152 appearances of Speech
+    2.8 HD against 14 of Eleven Labs v3. Spreading the reads costs nothing extra
+    and evens that out.
+
+    Audio is ~0.74 MiB per clip, so this is the expensive call in the module and
+    the only one that touches the 32.5 GiB. It writes wavs under
+    `eval_out/arena/clips/` and is resumable: clips already on disk are kept.
+    """
+    import pyarrow.parquet as pq
+
+    fs = _filesystem()
+    out_dir = CACHE / "clips"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    columns = [
+        "sentence",
+        "model_a",
+        "model_b",
+        "fine_grained_eval",
+        "audio_a",
+        "audio_b",
+    ]
+    clips: list[Clip] = []
+    for shard_index, path in enumerate(_shard_paths()):
+        if len(clips) >= target:
+            break
+        parquet = pq.ParquetFile(fs.open(path, "rb"))
+        group = seed % parquet.metadata.num_row_groups
+        rows = parquet.read_row_group(group, columns=columns).to_pylist()
+
+        for row in rows:
+            for side in ("a", "b"):
+                audio = row.get(f"audio_{side}") or {}
+                blob, name = audio.get("bytes"), audio.get("path")
+                if not blob or not name:
+                    continue
+                wav = out_dir / name
+                if not wav.exists():
+                    wav.write_bytes(blob)
+                clips.append(
+                    Clip(
+                        clip_id=name,
+                        system=row[f"model_{side}"],
+                        sentence=row["sentence"],
+                        subset=classify_subset(row["sentence"]),
+                        ratings=_ratings(row.get("fine_grained_eval"), side),
+                        wav=str(wav),
+                    )
+                )
+        print(f"  shard {shard_index}: {len(clips)} clips", flush=True)
+
+    manifest = CACHE / "clips.json"
+    manifest.write_text(json.dumps([asdict(c) for c in clips], ensure_ascii=False, indent=1))
+    return clips
+
+
+def _harvest(args: argparse.Namespace) -> int:
+    clips = harvest_clips(args.n)
+    systems: dict[str, int] = {}
+    rated = 0
+    for c in clips:
+        systems[c.system] = systems.get(c.system, 0) + 1
+        if c.ratings.get("intelligibility") is not None:
+            rated += 1
+    print(f"\n{len(clips)} clips, {rated} with an intelligibility rating")
+    for name, count in sorted(systems.items(), key=lambda kv: -kv[1]):
+        print(f"  {name:22s} {count:5d}")
+    return 0
+
+
+def score_clips(clips: list[Clip], *, resume: bool = True) -> list[dict]:
+    """Run this project's round-trip scorer over arena audio.
+
+    The same scorer, unmodified, that every Hindi claim in this repo rests on:
+    transcribe with Whisper, normalise both sides into Devanagari, take
+    character overlap. Running it over *their* clips is what converts it from a
+    number about us into a number with a known human meaning.
+
+    Scoring is the slow half of this module (Whisper at RTF 0.24 over clips of a
+    few seconds) so results are checkpointed after every clip and `resume`
+    picks up where an interrupted run stopped.
+    """
+    from voiceagent.eval.roundtrip import character_overlap, decode_for_scoring, normalized
+
+    path = CACHE / "scores.json"
+    done: dict[str, dict] = {}
+    if resume and path.exists():
+        done = {row["clip_id"]: row for row in json.loads(path.read_text())}
+
+    for index, clip in enumerate(clips, 1):
+        if clip.clip_id in done:
+            continue
+        try:
+            heard, language, note = decode_for_scoring(clip.wav, "hi")
+        except Exception as exc:  # a corrupt clip must not lose the whole run
+            done[clip.clip_id] = {**asdict(clip), "error": f"{type(exc).__name__}: {exc}"}
+            continue
+
+        overlap = character_overlap(normalized(clip.sentence, "hi"), normalized(heard, "hi"))
+        done[clip.clip_id] = {
+            **asdict(clip),
+            "heard": heard,
+            "language": language,
+            "note": note,
+            "overlap": overlap,
+        }
+        if index % 10 == 0:
+            path.write_text(json.dumps(list(done.values()), ensure_ascii=False, indent=1))
+            print(f"  scored {len(done)}/{len(clips)}", flush=True)
+
+    path.write_text(json.dumps(list(done.values()), ensure_ascii=False, indent=1))
+    return list(done.values())
+
+
+def correlate(rows: list[dict]) -> dict:
+    """Does our round-trip overlap track what humans called intelligibility?
+
+    This is the question the whole module exists to answer, and a null result is
+    a real one: if the correlation is flat, our scorer cannot place a system
+    against these raters and the honest move is to say so rather than to publish
+    a position it does not support.
+
+    Reported at clip level (thousands of paired points, noisy) and at system
+    level (seven points, each an average, far less noisy but n=7). Both, because
+    a strong system-level correlation on seven points is easy to over-read.
+    """
+    from scipy import stats
+
+    # `is not None`, not truthiness: a rating of 0 is a rating, and the axis
+    # scale is not documented as 1-based. Dropping zeros would quietly discard
+    # exactly the clips the raters thought were worst, which is the end of the
+    # range the correlation most depends on.
+    usable = [
+        r
+        for r in rows
+        if "overlap" in r and r.get("ratings", {}).get("intelligibility") is not None
+    ]
+    if len(usable) < 3:
+        return {"clips": len(usable), "error": "not enough rated clips to correlate"}
+
+    ours = [r["overlap"] for r in usable]
+    human = [r["ratings"]["intelligibility"] for r in usable]
+    pearson = stats.pearsonr(ours, human)
+    spearman = stats.spearmanr(ours, human)
+
+    by_system: dict[str, list[tuple[float, float]]] = {}
+    for r in usable:
+        by_system.setdefault(r["system"], []).append(
+            (r["overlap"], r["ratings"]["intelligibility"])
+        )
+    systems = {
+        name: {
+            "clips": len(pairs),
+            "our_overlap": sum(p[0] for p in pairs) / len(pairs),
+            "human_intelligibility": sum(p[1] for p in pairs) / len(pairs),
+        }
+        for name, pairs in sorted(by_system.items())
+    }
+
+    result = {
+        "clips": len(usable),
+        "clip_pearson_r": pearson.statistic,
+        "clip_pearson_p": pearson.pvalue,
+        "clip_spearman_r": spearman.statistic,
+        "clip_spearman_p": spearman.pvalue,
+        "systems": systems,
+    }
+    if len(systems) >= 3:
+        sys_ours = [s["our_overlap"] for s in systems.values()]
+        sys_human = [s["human_intelligibility"] for s in systems.values()]
+        sys_r = stats.pearsonr(sys_ours, sys_human)
+        result["system_pearson_r"] = sys_r.statistic
+        result["system_pearson_p"] = sys_r.pvalue
+    return result
+
+
+def _score(args: argparse.Namespace) -> int:
+    manifest = CACHE / "clips.json"
+    if not manifest.exists():
+        print("no clips yet -- run `arena clips` first", file=sys.stderr)
+        return 1
+    clips = [Clip(**row) for row in json.loads(manifest.read_text())][: args.n]
+    rows = score_clips(clips, resume=not args.restart)
+    stats_out = correlate(rows)
+    (CACHE / "correlation.json").write_text(json.dumps(stats_out, indent=1))
+
+    print(json.dumps({k: v for k, v in stats_out.items() if k != "systems"}, indent=1))
+    print("\nper system (our objective score vs their raters):")
+    print(f"  {'system':22s} {'clips':>6} {'ours':>8} {'human':>8}")
+    for name, row in sorted(
+        stats_out.get("systems", {}).items(),
+        key=lambda kv: -kv[1]["human_intelligibility"],
+    ):
+        print(
+            f"  {name:22s} {row['clips']:6d} {row['our_overlap']:8.3f} "
+            f"{row['human_intelligibility']:8.2f}"
+        )
+    return 0
 
 
 def _report_votes(args: argparse.Namespace) -> int:
@@ -287,6 +578,15 @@ def main(argv: list[str] | None = None) -> int:
     votes.add_argument("--shards", type=int, default=None, help="stop after N shards (a smoke test)")
     votes.add_argument("--bootstrap", type=int, default=500, help="bootstrap resamples for the CI")
     votes.set_defaults(func=_report_votes)
+
+    clips = sub.add_parser("clips", help="download arena audio and its human ratings")
+    clips.add_argument("-n", type=int, default=300, help="how many clips to fetch")
+    clips.set_defaults(func=_harvest)
+
+    score = sub.add_parser("score", help="round-trip the arena clips and correlate with raters")
+    score.add_argument("-n", type=int, default=None, help="score only the first N clips")
+    score.add_argument("--restart", action="store_true", help="ignore checkpointed scores")
+    score.set_defaults(func=_score)
 
     args = parser.parse_args(argv)
     return args.func(args)
