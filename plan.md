@@ -369,7 +369,26 @@ bug.
 
 ---
 
-## 6. Phase 2 — Evidence (2 weeks, overlapping Phase 1)
+## 6. Phase 2 — Evidence (2 weeks, overlapping Phase 1) — **MOSTLY DONE**
+
+Done 2026-08-14: the spec sheet (`eval_out/SPECSHEET.md`), the licence audit as a
+green build gate, and the quality position — `eval_out/arena/FINDINGS.md`.
+
+Outstanding: the offline demo recording, which needs a camera and a person.
+
+The quality result went further than "run our conditions against the code-mixed
+subset" anticipated, in a direction worth reading before writing any marketing.
+We land **inside the intelligibility band of the six working cloud systems** on
+held-out arena code-mixed sentences, and separate cleanly from IndicF5 (92%
+paired wins; those raters approved IndicF5 13% of the time). That is the claim.
+
+But we also came top of our own table, above Gemini and ElevenLabs, and that is
+**not** a result. Calibrating our round-trip scorer against 654 human-rated arena
+clips put it at AUC 0.671, and 0.625 with IndicF5 removed, against 0.500 for a
+coin flip — inside the working band its ordering inverts relative to the raters.
+The instrument that produced our number cannot rank the band it places us in.
+Publishing that top row would be §1.1 committed with our own counter-evidence
+next to it. See [[roundtrip-cannot-rank-quality]] in the project memory.
 
 The claim to earn is no longer "better than ElevenLabs." It is falsifiable and
 much easier to defend:

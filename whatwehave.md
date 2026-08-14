@@ -3,7 +3,8 @@
 Living summary of the project. Amend this after each change; keep it concise —
 the README holds the long-form evidence, this holds the current state.
 
-Last updated: 2026-08-14 (Phase 12: Hindi off IndicF5, licence audit green)
+Last updated: 2026-08-14 (Phase 2 evidence: a Hindi quality verdict, and the
+measured limits of the scorer that produced it — `eval_out/arena/FINDINGS.md`)
 
 ## What it is
 
@@ -38,6 +39,7 @@ Hard constraints the code enforces:
 | Web UI | working | `voice-web` → 127.0.0.1:8823 |
 | Desktop app | **self-contained** | 1.3 GB `.app`, embeds Python; no checkout, no uv, no venv |
 | Blind A/B listening test | **built, unrated** | 12 held-out sentences, real / vocoded / ours |
+| Quality position (Hindi) | **measured** | inside the band of 6 cloud systems on arena code-mixed; 92% paired wins over IndicF5 |
 | Licence audit | **green** | `voice-doctor` exits 0 with every extra installed |
 
 Entry points: `voice-doctor`, `voice-web`, `voice-chat`. 395 tests.
@@ -63,11 +65,14 @@ Chatterbox rather than IndicF5 (Phase 12 — licence tree, and it measured bette
 
 **Blocking / unresolved**
 
-- **No Hindi quality verdict.** The blind harness exists but has never been rated
-  by enough listeners; `results()` refuses a verdict below 20 ratings/system. F0
-  and spectral centroid were tried and contradicted the speaker's own ear.
-  AI4Bharat's **SpeechArenaBench** (120K pairwise comparisons, 1,900 native
-  raters, data released) is now a better instrument than recruiting our own.
+- **Naturalness is still unmeasured**, and round trip cannot stand in for it.
+  Measured against SpeechArenaBench's 654 human-rated clips, our round-trip
+  scorer predicts a native speaker's intelligibility verdict at AUC 0.671, and
+  **0.625 with the one broken system removed** — near the 0.500 coin flip. It
+  separates broken speech from working speech and cannot rank within the working
+  band, where its ordering actually inverts against the raters. So the intelligibility
+  half of the quality question is answered (see below) and the naturalness half
+  needs listeners. The blind harness stays, as the regression gate it is good at.
 
 **Known and accepted**
 
@@ -127,11 +132,14 @@ See `plan.md` for the strategy this now serves, and why it changed.
 
 **Next, in order**
 
-1. **Publish the measured spec sheet** (plan.md §6) — latency, RTF per language,
-   resident memory per configuration, CER, round-trip against its real ceiling.
-   Everything it needs is now measured.
-2. **Sign and notarise the `.app`** — the bundle is built and verified running
-   outside any checkout; Gatekeeper is what is left.
+1. **Sign and notarise the `.app`** — the bundle is built and verified running
+   outside any checkout; Gatekeeper is what is left. Needs Apple Developer
+   credentials, so it cannot be done unattended.
+2. **Phase 3, the first customer conversation.** Phase 2's evidence is in
+   `eval_out/arena/FINDINGS.md`: the spec sheet, the licence audit, and now a
+   quality position that is narrow enough to defend.
+
+The spec sheet (old item 1) shipped; see `eval_out/SPECSHEET.md`.
 
 **Later**
 
@@ -144,7 +152,18 @@ See `plan.md` for the strategy this now serves, and why it changed.
 ## Working principles that keep paying off
 
 - **Verify by round trip, not by ear or spectrum.** Babble measured identical to
-  real speech on spectral flatness.
+  real speech on spectral flatness. But know what it is: an alarm, not a
+  ranking. Every clip under 0.5 overlap was rejected by human raters too (11 of
+  11), and above that it stops discriminating — a 0.88 is not better than a
+  0.85. Never quote it against a competitor.
+- **Calibrate a metric before trusting its ordering.** Round trip looked like a
+  quality measure for months and reads r=0.948 across seven systems, which is
+  one broken outlier dragging a line through a cluster. The check that exposed
+  it was removing that outlier and asking again.
+- **Read the data, not the data card.** SpeechArenaBench documents six 1–5
+  rating scales and ships six binary ones (only 1 and 5 occur), and its
+  `preference_model` column holds model names where the card says "Model A".
+  Both would have produced confident, wrong numbers in silence.
 - **The starting loss, not the loss curve**, tells you a fine-tune actually loaded
   (0.908 loaded vs 8.24 random — falling loss looks the same either way).
 - **Control conditions make results interpretable** — the vocoder-only condition is
