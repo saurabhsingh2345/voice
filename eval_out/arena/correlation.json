@@ -1,0 +1,51 @@
+{
+ "clips": 654,
+ "clip_pearson_r": 0.3000271672779359,
+ "clip_pearson_p": 4.528710959173878e-15,
+ "clip_spearman_r": 0.2812384708683858,
+ "clip_spearman_p": 2.356039379095621e-13,
+ "systems": {
+  "Bulbul V3 Beta": {
+   "clips": 118,
+   "our_overlap": 0.8650195658861094,
+   "human_good_rate": 0.7542372881355932
+  },
+  "Eleven Labs v3": {
+   "clips": 214,
+   "our_overlap": 0.8590893420319469,
+   "human_good_rate": 0.5747663551401869
+  },
+  "GPT 4o Mini TTS": {
+   "clips": 59,
+   "our_overlap": 0.8722848247789505,
+   "human_good_rate": 0.7966101694915254
+  },
+  "Gemini 2.5 Pro TTS": {
+   "clips": 56,
+   "our_overlap": 0.859311672392746,
+   "human_good_rate": 0.7678571428571429
+  },
+  "Indic F5": {
+   "clips": 39,
+   "our_overlap": 0.48648539071984065,
+   "human_good_rate": 0.1282051282051282
+  },
+  "Sonic 3": {
+   "clips": 56,
+   "our_overlap": 0.8520018919133939,
+   "human_good_rate": 0.75
+  },
+  "Speech 2.8 HD": {
+   "clips": 112,
+   "our_overlap": 0.8907373874435873,
+   "human_good_rate": 0.6964285714285714
+  }
+ },
+ "system_pearson_r": 0.9483837081282172,
+ "system_pearson_p": 0.0011305894993457817,
+ "good_rate": 0.6529051987767585,
+ "auc": 0.6705423557449267,
+ "cloud_clips": 615,
+ "cloud_good_rate": 0.6861788617886179,
+ "cloud_auc": 0.6247083957468752
+}

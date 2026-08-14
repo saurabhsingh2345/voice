@@ -745,6 +745,70 @@ def _render(args: argparse.Namespace) -> int:
     return 0
 
 
+def _compare(args: argparse.Namespace) -> int:
+    """Place this project's engine beside the seven, and say what that is worth.
+
+    Paired where possible: most of the sentences we rendered were also rendered
+    by the arena systems, so the comparison can hold the sentence fixed instead
+    of comparing two different sentence samples and hoping they average out.
+    """
+    import statistics
+
+    scored = [r for r in json.loads((CACHE / "scores.json").read_text()) if "overlap" in r]
+    ours = [r for r in json.loads((CACHE / "ours.json").read_text()) if "overlap" in r]
+    if not scored or not ours:
+        print("run `arena score` and `arena ours` first", file=sys.stderr)
+        return 1
+
+    code_mixed = [r for r in scored if r["subset"] == "codemixed"]
+    stats_out = correlate(scored)
+
+    print("=== 1. Same scorer, same input condition (code-mixed) ===\n")
+    print(f"  {'system':44s} {'n':>4} {'overlap':>8} {'human':>10}")
+    table: list[tuple[str, int, float, float | None]] = []
+    grouped: dict[str, list[dict]] = {}
+    for r in code_mixed:
+        grouped.setdefault(r["system"], []).append(r)
+    for name, rows in grouped.items():
+        good = sum(1 for r in rows if r["ratings"]["intelligibility"] >= GOOD_RATING) / len(rows)
+        table.append((name, len(rows), statistics.mean(r["overlap"] for r in rows), good))
+    table.append((OUR_SYSTEM, len(ours), statistics.mean(r["overlap"] for r in ours), None))
+    for name, count, overlap, good in sorted(table, key=lambda t: -t[2]):
+        human = f"{good:9.0%}" if good is not None else "  no rater"
+        print(f"  {name:44s} {count:4d} {overlap:8.3f} {human}")
+
+    # Paired: hold the sentence fixed.
+    by_sentence: dict[str, list[dict]] = {}
+    for r in scored:
+        by_sentence.setdefault(r["sentence"], []).append(r)
+    wins: dict[str, list[int]] = {}
+    for row in ours:
+        for other in by_sentence.get(row["sentence"], []):
+            wins.setdefault(other["system"], []).append(
+                1 if row["overlap"] > other["overlap"] else 0
+            )
+    if wins:
+        print("\n=== 2. Paired on identical sentences: how often do we score higher? ===\n")
+        for name, results in sorted(wins.items(), key=lambda kv: -sum(kv[1]) / len(kv[1])):
+            print(
+                f"  vs {name:42s} {sum(results):3d}/{len(results):<3d} "
+                f"({sum(results) / len(results):.0%})"
+            )
+
+    print("\n=== 3. What that is worth ===\n")
+    print(f"  Our scorer predicts a native speaker's verdict at AUC {stats_out['auc']:.3f}")
+    print(
+        f"  With the one broken system removed, AUC {stats_out['cloud_auc']:.3f} "
+        f"-- a coin flip is 0.500"
+    )
+    print(
+        "\n  So table 1 ranks nothing inside the working band. It is read as: this\n"
+        "  engine is in the band, and is nowhere near the failure case. Any\n"
+        "  stronger reading is unsupported by the instrument that produced it."
+    )
+    return 0
+
+
 def _report_votes(args: argparse.Namespace) -> int:
     votes = cached_votes(refresh=args.refresh, limit_shards=args.shards)
     if not votes:
@@ -799,6 +863,9 @@ def main(argv: list[str] | None = None) -> int:
     ours.add_argument("-n", type=int, default=40, help="how many sentences")
     ours.add_argument("--subset", default="codemixed", help="which input condition")
     ours.set_defaults(func=_render)
+
+    compare = sub.add_parser("compare", help="the verdict: place our engine and caveat it")
+    compare.set_defaults(func=_compare)
 
     args = parser.parse_args(argv)
     return args.func(args)
