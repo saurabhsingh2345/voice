@@ -20,12 +20,20 @@ from pathlib import Path
 
 import numpy as np
 import soundfile as sf
-from fastapi import FastAPI, Form, HTTPException, UploadFile
+from fastapi import FastAPI, Form, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from voiceagent import version
 from voiceagent.text.detect import detect
 from voiceagent.web.metering import FAILED, OK, REJECTED, Meter, Usage, characters_of
+from voiceagent.web.public import (
+    PublicSurface,
+    RateLimiter,
+    allowed_origins,
+    client_ip,
+    is_public,
+)
 from voiceagent.web.queue import Full as QueueFull
 from voiceagent.web.queue import SynthesisQueue
 from voiceagent.text.normalize_hi import normalize as normalize_hi
@@ -58,6 +66,36 @@ from voiceagent.voice_clone.store import (
 )
 
 app = FastAPI(title="Local Voice Agent")
+
+#: Order matters. CORS is added last and therefore runs *outermost*, so a
+#: request blocked by the public allowlist still comes back with the headers a
+#: browser needs to read the response --- otherwise the page sees an opaque
+#: network error instead of the 404, and the bug looks like the tunnel.
+app.add_middleware(PublicSurface)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins(),
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+    #: The X-* headers carry the queue position and the billable count, and a
+    #: browser cannot read them unless they are named here.
+    expose_headers=[
+        "X-Synthesis-Ms",
+        "X-Audio-Seconds",
+        "X-Realtime-Factor",
+        "X-Audio-Format",
+        "X-Language",
+        "X-Queued-Seconds",
+        "X-Queue-Ahead",
+        "X-Billable-Characters",
+        "Retry-After",
+    ],
+)
+
+#: Protects the one machine when the link is public. Off-path locally: `check`
+#: is only consulted in public mode.
+rate_limiter = RateLimiter()
+
 store = VoiceProfileStore()
 engine = ChatterboxCloneEngine(store=store)
 
@@ -360,14 +398,28 @@ async def usage(account: str = DEFAULT_ACCOUNT, since: str | None = None) -> dic
 
 @app.get("/api/voices")
 async def list_voices() -> list[dict]:
+    """The voices available to generate with.
+
+    Trimmed in public mode. The consent record --- the exact words the speaker
+    read and when they granted it --- belongs to that person and to whoever
+    audits us, not to every visitor with the link. A picker needs a name, a
+    length and an id; the rest is disclosure with no purpose.
+    """
+    public = is_public()
     return [
         {
             "profile_id": p.profile_id,
             "speaker_name": p.speaker_name,
-            "created_at": p.created_at,
             "duration_seconds": round(p.duration_seconds, 1),
-            "consent_granted_at": p.consent.granted_at,
-            "reference_text": p.reference_text,
+            **(
+                {}
+                if public
+                else {
+                    "created_at": p.created_at,
+                    "consent_granted_at": p.consent.granted_at,
+                    "reference_text": p.reference_text,
+                }
+            ),
         }
         for p in store.list()
     ]
@@ -534,6 +586,7 @@ async def encode(audio: UploadFile, format: str = Form("flac")) -> Response:
 
 @app.post("/api/speak")
 async def speak(
+    request: Request,
     text: str = Form(...),
     profile_id: str = Form(...),
     format: str = Form("wav"),
@@ -570,6 +623,27 @@ async def speak(
     parts: list[np.ndarray] = []
     started = time.perf_counter()
     billable = characters_of(text)
+
+    # Checked before any work, because the point is to not spend the machine on
+    # it. Only consulted in public mode: a local user rate-limiting themselves
+    # would be a bug, not a protection.
+    caller = client_ip(request)
+    if is_public():
+        refusal = rate_limiter.check(caller, billable)
+        if refusal:
+            _meter_quietly(
+                Usage(
+                    account=account,
+                    characters=billable,
+                    status=REJECTED,
+                    voice=profile_id,
+                    detail="rate limited",
+                )
+            )
+            raise HTTPException(429, refusal)
+        # Counted at admission rather than on success, so a request that fails
+        # after occupying the machine still costs its caller a slot.
+        rate_limiter.record(caller, billable)
 
     # Queue rather than refuse. This used to raise 429 the moment the lock was
     # held, and that was right for a developer tool -- see BUSY_MESSAGE for the
