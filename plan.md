@@ -1,12 +1,21 @@
-# Plan — revised against what is actually true in August 2026
+# Plan — ElevenLabs for India
 
-Companion to `whatwehave.md` (current state) and the bootstrap-to-funded draft.
-Written 2026-08-14, **with** web access, after running the verification list that
-the draft correctly said had to be run first.
+Companion to `whatwehave.md` (current state). Evidence gathered 2026-08-14 with
+web access; **strategy rewritten 2026-08-15** on the founder's call.
 
-The draft asked to be checked before being acted on. It has now been checked.
-Most of the strategy does not survive contact with the evidence. The engineering
-assets do, and they point somewhere better.
+Read §3 first. The product is a paid Indian-language voice platform — website,
+API, credits in rupees — with the fully offline desktop app as its premium tier
+rather than as the whole company.
+
+**Sections 0, 1, 2 and 10 are evidence and are unchanged.** They are what a
+week of verification found, and they remain true under the new strategy: Indian
+TTS is commoditising, ElevenLabs is genuinely strong at Hindi, Sarvam sells at
+₹2.70 a finished minute. The platform has to be built with those facts true, not
+by forgetting them. §13 lists what else did not change and why.
+
+Two things in §3 are new and neither is optional: **we speak one Indian
+language and the plan needs several** (§3.1), and **hosted inference retires
+the zero-recurring-cost constraint the codebase was built on** (§3.2).
 
 ---
 
@@ -220,45 +229,130 @@ where this repo already sits, alone.
 
 ---
 
-## 3. The revised thesis
+## 3. The thesis — rewritten 2026-08-15
 
-> Indian-language **speech quality** is solved and commoditising fast: Gemini,
-> ElevenLabs and Cartesia lead on quality, Sarvam sells Hindi at ₹2.70/minute,
-> Bhashini gives it away. Competing there is competing on someone else's
-> strength at someone else's price.
+**Superseded:** the offline-only thesis this section used to hold. It argued that
+rendered audio is a commodity and the only defensible position is the private
+on-prem agent. Sections 1 and 2 above are the evidence for that and they are
+unchanged and still true. The founder's call is that they support a *narrower*
+conclusion than was drawn from them, and the product is being built as follows.
+
+> **ElevenLabs for India.** A paid Indian-language voice platform: a website
+> where anyone signs up, clones or picks a voice, generates speech, and pays;
+> an API behind it for developers; and a desktop app that runs the same engine
+> **entirely offline** for the buyers who cannot use a cloud at all.
 >
-> Indian-language **agents that run where the data cannot leave** are not solved
-> by anyone. Sarvam Edge is speech-only. Everyone else is cloud. DPDP, RBI cloud
-> guidance and sectoral regulators are converting "we'd prefer local" into
-> "procurement requires local" on a deadline of May 2027.
->
-> This repo is a working, tested, licence-audited, memory-budgeted, offline
-> Hindi+English voice agent with tool calling and encrypted memory on consumer
-> hardware. That is the product. The TTS is a component, and it should be the
-> best permissively-licensed component available — not a research project.
+> Not "beat ElevenLabs at Hindi." Be the one built *for* this market —
+> Indian languages, Indian pricing, UPI and rupees, Indian support hours — and
+> own the one capability none of them have: it also runs with the network off.
+
+The offline path is not abandoned; it is **demoted from the whole company to the
+premium tier**. That is the honest version of this strategy, and it is stronger
+than either half alone: the web product is how the business is funded and
+distributed, and the offline desktop app is the thing a competitor with a
+datacenter cannot copy without rebuilding on small models.
 
 What changes concretely:
 
-| | Old plan | Revised |
+| | Offline-only plan | Now |
 | --- | --- | --- |
-| Asset | Proprietary Hindi audio | The local agent runtime + licence/eval discipline |
-| Wedge | Best Hindi voice | Only private on-prem/on-device Indic voice agent |
-| Buyer | Ed-tech content teams | Regulated enterprises; OEM/ISV embedders |
-| Priced against | Human VO ₹1000/min | Cloud voice-agent stacks + compliance risk |
-| Model work | Fine-tune IndicF5 | Swap to MIT Chatterbox, drive RTF < 1 |
-| Evaluation | Recruit 20 listeners | Ride SpeechArenaBench; keep harness as regression |
-| Blocking risk | Licence violation | Same — but now a 1-day fix, not a 2-week fork |
+| Product | An on-prem agent, sold by hand | A self-serve website + API, plus a desktop app |
+| Revenue | ₹50k–2L pilots, hand-installed | Credits and subscriptions, self-serve, plus enterprise |
+| Buyer | CISOs at regulated enterprises | Creators, developers, studios, SMBs — *and* those CISOs |
+| Inference | On the user's machine, always | **Hosted**, with on-device as a tier |
+| Recurring cost | Zero, by hard constraint | **A real COGS line.** See §3.2 |
+| Languages | Hindi was enough | **Hindi is nowhere near enough.** See §3.1 |
+| Offline agent | The entire thesis | The premium differentiator |
 
-**What survives from the draft, unchanged and still right:** licence discipline
-enforced in code; verify by round trip not by ear; the starting loss tells you a
-fine-tune loaded; control conditions make results interpretable; a measurement
-that contradicts the speaker loses; charge someone early. Those are the reasons
-this pivot is even available.
+**What survives, unchanged and still load-bearing:** licence discipline enforced
+in code; round trip is an alarm and never a ranking; publish your own ceilings;
+a measurement that contradicts the speaker loses; charge early. None of that is
+strategy-dependent — it is how this codebase avoids being confidently wrong.
 
-**The recording sprint is demoted, not deleted.** 60–90 minutes of consented
-expressive Hindi is still a real asset and still cheap — but it is no longer the
-highest-value task, because a better speaker cannot fix a commodity market. Do it
-in Phase 2, on the Chatterbox path, when it can be judged.
+### 3.1 The critical gap: we speak one Indian language
+
+This is the single biggest issue with the reframe, and it is now the critical
+path rather than a footnote.
+
+"For the Indian market what ElevenLabs did for the world" is a claim about
+**coverage**. ElevenLabs' own India page advertises **12 Indian languages**.
+Sarvam covers 10. Bhashini covers the schedule. This repo speaks **Hindi**, and
+raises `UnsupportedLanguage` on every other Indic script.
+
+That was a deliberate, correct trade when the product was one offline agent for
+Hindi-belt enterprises (§4: eleven languages traded for a clean licence tree).
+It is disqualifying for a consumer platform. A visitor who cannot find Tamil,
+Telugu, Bengali, Marathi or Gujarati does not become a smaller customer — they
+leave.
+
+So language coverage moves to **Phase A, first, ahead of everything**, and it is
+the one item on this plan that could fail on technical grounds. Options, in the
+order they should be tried:
+
+1. **Chatterbox Multilingual already speaks 23 languages** — but only Hindi
+   among Indic. Check what its tokenizer actually does with Marathi and Nepali,
+   which share Devanagari; that is a free experiment and might yield two more.
+2. **Indic Parler-TTS** — Apache-2.0, **21 languages**, Hindi at 84.79% native
+   satisfaction (§10). Description-based control, *no cloning*. This is the most
+   likely answer for breadth, and it is licence-clean. The cost is that cloned
+   voices would be Hindi/English-only for a while.
+3. **IndicF5** — speaks 11, MIT weights, but ranks last of seven and drags in a
+   dependency tree that fails our own audit. Only as a stopgap, and only if the
+   audit rule is consciously suspended, which §2.1's history says it should not
+   be.
+4. **Fine-tune on IndiaAI compute** — ₹65–92/GPU-hour, up to 40% subsidy. The
+   real answer at scale, and the reason to apply now rather than later.
+
+**Do not sell a language before it is measured.** Shipping bad Tamil is worse
+than shipping no Tamil: §1.1 is what a public quality ranking does to a company
+that got ahead of its evidence.
+
+### 3.2 The architectural inversion: hosted inference
+
+Constraint 3 in `README.md` and `whatwehave.md` reads *"Zero recurring cost —
+local inference only."* A paid website and an API mean **someone else's request
+runs on our hardware**, on our electricity bill, at our latency. That constraint
+is retired for the hosted product and **kept for the desktop app**, which is
+what makes the two tiers genuinely different rather than the same thing priced
+twice.
+
+The awkward part is specific: **the entire stack is MLX, which runs only on
+Apple Silicon.** There is no Linux or CUDA path today. Three ways out, and the
+first is better than it sounds:
+
+1. **Serve from Mac hardware.** MLX runs fine; a Mac mini or Studio fleet is a
+   real, boring, cheap way to serve early volume, and it needs *zero* porting.
+   This is the launch answer.
+2. **Port to PyTorch/CUDA.** Chatterbox's original implementation *is* PyTorch —
+   `mlx-audio` is a port of it, and the weights are the same MIT checkpoint. So
+   this is a rewrite of our engine wrapper, not of the model. This is the scale
+   answer, and it unlocks IndiaAI GPUs.
+3. Both: Macs for launch, GPUs when queue depth says so.
+
+Two things follow immediately. **Cost per generation becomes a number we must
+know**, because Sarvam sells at ₹2.70/finished minute and Bhashini is ~free —
+that is the price ceiling and the margin has to live under it. And **the spec
+sheet's job changes**: it stops being a buyer-facing credibility artifact and
+becomes capacity planning.
+
+### 3.3 What the competition actually sells, which is not just a model
+
+From §1.2, ElevenLabs' India page: 12 Indian languages, voices tuned for Indian
+accents and code-switched speech, India data residency, SOC 2 / ISO 27001 / PCI
+DSS, telephony integrations with Ozonetel, Exotel and Plivo, and named customers
+including Meesho, Kuku FM, PocketFM, Cars24, hoichoi and TVS Motor.
+
+Almost none of that is the model. It is coverage, compliance paper,
+integrations, and proof. A better checkpoint does not win this; a better
+*product* might. What we can credibly beat them on, in order:
+
+- **Price in rupees**, with UPI, and no dollar-denominated card wall.
+- **Offline desktop**, which none of them has at all.
+- **Support in the same timezone**, from the person who wrote it.
+- **A licence audit** that any customer's legal team can rerun.
+
+What we cannot beat them on today: languages, compliance certifications, and
+enterprise integrations. Those are build items, not talking points.
 
 ---
 
@@ -419,98 +513,104 @@ What to produce:
 
 ---
 
-## 7. Phase 3 — First paying customer (6–10 weeks, starts during Phase 1)
+## 7. The roadmap, rebuilt around the platform
 
-**The material is written** — `outreach/`, 2026-08-14: a claims register, the
-one-pager, first-contact emails for the three wedges below plus the AI4Bharat
-letter, a call guide with the eight objections, pricing, and the target filter.
-`outreach/CLAIMS.md` is the gate on every number that leaves the building, and
-it opens by forbidding the one this project would most like to quote.
+Phases are lettered to keep them distinct from the old numbered ones, which are
+done and are referenced throughout this document.
 
-What is left in this phase is not desk work: record the offline demo, build ten
-real names against the filter, and send.
+### Phase A — Languages (the critical path)
 
-**Wedges, re-ranked against the evidence:**
+Nothing else on this plan matters if the answer is "Hindi." See §3.1.
 
-**1. Regulated-enterprise private voice agent.** ⭐ BFSI, insurance, healthcare,
-government-adjacent. Their voice data legally should not leave the perimeter, and
-the May 2027 DPDP deadline gives them a date. On-prem agentic voice normally
-implies H100/L40S clusters; yours runs on a workstation. That is the pitch.
-Slow procurement — start now, in parallel with everything.
+1. Test Chatterbox Multilingual on Marathi and Nepali. Same script, free
+   experiment, possibly two languages for nothing.
+2. Spike **Indic Parler-TTS** (Apache-2.0, 21 languages) as the breadth engine,
+   behind the same `<module>/base.py` seam every other engine sits behind. Route
+   on script, exactly as the TTS router already does.
+3. Decide the split honestly: **cloning in Hindi and English; catalogue voices
+   in everything else.** That is a shippable product and a truthful pricing
+   page. Pretending otherwise is §1.1 waiting to happen.
+4. Measure each language before it goes on the pricing page. Round trip is an
+   alarm only; for a *ranking* the only validated instrument in this project is
+   pairwise comparison, which is what `arena_bt` fits.
 
-**2. OEM / ISV embedding.** Device makers, kiosk vendors, POS, in-vehicle,
-medical devices, rural-connectivity products. They need offline Indic voice and
-cannot ship a cloud dependency. Sarvam Edge targets this and has announced no
-partnerships or availability; you have a working stack today. Licence per unit
-or per deployment.
+**Exit test:** five Indian languages, each measured, each with a named ceiling.
 
-**3. Privacy-first prosumer agent.** Doctors, lawyers, journalists, therapists —
-professionals with confidentiality duties and no IT department. One-time licence
-or modest subscription. Lowest procurement friction, fastest to a first invoice,
-and it directly exercises the desktop bundle from Phase 1.
+### Phase B — The product surface
 
-**4. Ed-tech narration.** Demoted from #1 to last. The draft's own logic —
-"they're already paying for TTS, so you're a switch not a new budget line" —
-now cuts the other way: they can switch to Sarvam at ₹2.70/minute. Take this
-work only as opportunistic cash, never as the strategy.
+The website is the company now. Concretely:
 
-**Pricing.** Not per-minute — you are not selling minutes. Sell deployment:
-a pilot at ₹50k–2L for a scoped on-prem installation; per-seat or per-device for
-OEM; ₹2,000–5,000 one-time or ₹500/month for prosumer. The comparison is not
-₹2.70/minute of audio, it is the cost and risk of the compliance path they would
-otherwise take. First deal small but **never free** — the first invoice is still
-the hinge, and that part of the draft was right.
+- **Landing page** that states what it is in one screen, with audio you can play
+  before signing up. Audio-first: a voice product whose landing page cannot be
+  *heard* is failing at the only demonstration that matters.
+- **Studio** — the generation UI. The existing `voice-web` is a developer tool;
+  this is the paid product and it needs to be as good as the thing it competes
+  with.
+- **Voice library** — catalogue voices per language, plus cloning where we have
+  it. Consent records stay mandatory; that machinery already exists and is one
+  of the few places we are ahead.
+- **Accounts, credits, billing.** Rupees, UPI, Razorpay. Credits metered per
+  character, the unit the whole market prices in.
+- **API** — keys, rate limits, usage, docs. Developers are the compounding
+  channel; a creator churns, an integration does not.
+- **Desktop app** as the offline tier, signed and notarised. It already exists
+  (§5) and is 90% of a premium SKU nobody else can offer.
 
-**Do the work by hand.** No self-serve platform. You, on a call, installing it.
+### Phase C — Serving
 
----
+- Launch on **Mac hardware**; it needs no porting (§3.2).
+- Instrument **cost per generation** from day one. The price ceiling is Sarvam's
+  ₹2.70/finished minute and the margin has to live under it.
+- Queue, per-key rate limits, and a hard concurrency cap. The synthesis lock in
+  `web/server.py` is already the right shape and already refuses rather than
+  queues — that decision survives.
+- Port to PyTorch/CUDA when queue depth demands it, not before. The weights are
+  the same MIT checkpoint; it is our wrapper that is MLX-specific.
 
-## 8. Phase 4 — Scale (3–6 months)
+### Phase D — The recording flywheel
 
-- **Services first, then product** — the draft's sequencing holds. Two or three
-  on-prem deployments teach you the workflow; productise what repeats.
-- **Compute.** The draft assumed free tiers were the ceiling. They are not.
-  [Kaggle is ~30 GPU-h/week](https://www.kaggle.com/) (T4/P100) and fine for
-  small runs, but **IndiaAI Mission has 38,000+ GPUs available to Indian
-  startups, researchers and MSMEs at ₹65–92/hour** via the IndiaAI Compute
-  Portal, with up to 40% subsidy for approved projects, and **AI Kosh** hosts
-  1,000+ machine-readable datasets.
-  ([TechDodo](https://techdodo.in/articles/india-ai-impact-summit-2026-gpu-access-guide))
-  Apply. This removes compute as a constraint and is also a credibility signal.
-- **More voices / more languages** via the same script-detect → engine-route
-  pattern. Now genuinely cheap: Chatterbox Multilingual covers 23 languages in
-  one model, so Marathi/Bengali become configuration and evaluation, not new
-  engines.
-- **Metrics from day one:** deployments, devices, per-device licence revenue,
-  memory/latency envelope per release, retention, revenue concentration.
-  Keep the quality trendline — a measured trendline is a moat narrative.
+The founder's idea, and it is a good one: after a generation, let the speaker
+record the same line, and keep the pair. See §14 for what it is and is not.
 
-**Incorporate when:** a client's procurement demands it, you need a payment
-gateway, you approach the GST threshold, or an investor conversation gets real.
-Private Limited. Sole proprietorship + invoices is fine until then.
+### Phase E — Enterprise and offline, as a tier
+
+Everything in `outreach/` survives, repositioned: the regulated-enterprise
+material now sells the **top tier of a product** rather than the whole company.
+That is an easier sale, not a harder one, because the buyer can see a working
+public product first. The DPDP deadline of 13 May 2027 is unchanged.
 
 ---
 
-## 9. Phase 5 — Raise
+## 8. Pricing
 
-The pitch is not "better Hindi voice." It is:
+Anchored on the market's own units, not on ours.
 
-> Every Indian-language voice system is a cloud API. DPDP, RBI and sectoral
-> regulators are making that untenable for the sectors with the most voice
-> traffic, on a May 2027 deadline. We run the whole agent — speech, reasoning,
-> tools, memory — offline on hardware people already own, with a licence audit
-> that fails the build. Here it is with the network off. Here are the customers.
+| Tier | Shape | Notes |
+| --- | --- | --- |
+| Free | A few thousand characters/month, watermarked | Enough to hear it; not enough to ship with |
+| Creator | Monthly, in ₹, credits per character | Undercut a dollar-priced competitor on purchasing power, not on cost |
+| Developer | API keys, usage-metered | The compounding channel |
+| Desktop / offline | One-time or annual licence | **Nobody else sells this.** Price on capability, not on volume |
+| Enterprise | On-prem, hand-installed | `outreach/PRICING.md` still applies |
 
-Realistic numbers: Indian pre-seed runs **₹25 lakh – ₹2 crore**; angel networks
-write **₹50 lakh – ₹3 crore**; institutional seed **₹1–10 crore**, with AI and
-deep-tech at the upper end. Angel tax was abolished for domestic investors by the
-Finance Act 2024. Investors in 2026 expect traction before the cheque.
-([Startup Movers](https://www.startup-movers.com/blog/pre-seed-vs-seed-funding-india),
-[myHQ](https://myhq.in/guides/seed-funding-guide))
+Two rules that do not bend. **Rupees and UPI**, because a card wall in dollars
+loses the market this is named after. And **the free tier must be small enough
+to have a real cost ceiling** — hosted inference is now a COGS line, and a
+generous free tier on someone else's GPU bill is how this dies quietly.
 
-Non-dilutive first: IndiaAI Mission, IIT incubators, NVIDIA Inception. An
-AI4Bharat relationship is worth cultivating — they are a supplier and a
-credibility source, and you should tell them their own benchmark redirected you.
+---
+
+## 9. Risks, restated for the platform
+
+| Risk | Likelihood | Mitigation |
+| --- | --- | --- |
+| **We cannot get past Hindi cleanly** | **Medium-high** | Phase A is first for this reason. Parler is the fallback; catalogue-not-cloning is the honest degraded product |
+| Serving costs exceed price | **High at first** | Measure per-generation cost before launch, cap the free tier, Macs before GPUs |
+| Competing head-on with better-funded incumbents | **High** | Do not fight on model quality (§1.1). Fight on price in ₹, offline, and support |
+| Quality claim outruns evidence | Medium | `outreach/CLAIMS.md` already governs this and applies unchanged to marketing copy |
+| MLX lock-in blocks scale | Medium | PyTorch original exists; port is a wrapper rewrite, not a model rewrite |
+| Solo founder, now with an uptime obligation | **High** | A paid API is a promise to be awake. Status page, honest SLAs, and do not sell enterprise support that cannot be staffed |
+| Offline tier cannibalises hosted | Low | Different buyers. The offline buyer cannot use the hosted one by law |
 
 ---
 
@@ -537,63 +637,102 @@ credibility source, and you should tell them their own benchmark redirected you.
 
 ---
 
-## 11. Risks
+## 11. The next two weeks
 
-| Risk | Likelihood | Mitigation |
-| --- | --- | --- |
-| Chatterbox Hindi is worse than IndicF5 | **Medium** | Measure in Phase 0 before committing. BUPS recipe, then Indic Parler-TTS, then reconsider. Note IndicF5 ranked last anyway — the bar is lower than it feels |
-| Sarvam Edge ships an agent layer | **Medium-high** | Your lead is a working tool-calling agent with memory *today*. Ship the bundle fast. Being small and shipping is the only edge |
-| ElevenLabs/Google ship true on-device Indic | Low-medium | Neither has an on-device story; both monetise cloud inference. Watch quarterly |
-| Enterprises say "India data residency is enough" | **High** | Many will. Target the ones where it genuinely is not — RBI-regulated, healthcare, government. Fewer buyers, bigger deals |
-| On-prem sales cycles outrun your runway | High | That is why prosumer (#3) and opportunistic narration (#4) exist — near-term cash while enterprise ripens |
-| The pivot is wrong and quality is the wedge after all | Low | SpeechArenaBench is 120K comparisons and 1,900 raters. Do not argue with it using 12 sentences |
-| Solo-founder burnout | High | This plan is now mostly engineering you already know how to do, on a codebase you already have. Ship narrow |
+**Days 1–4 — Phase A, languages.** The critical path and the only item that can
+fail on technical grounds. Test Chatterbox on Marathi and Nepali (same script,
+free). Spike Indic Parler-TTS behind the existing engine seam. Decide the
+cloning-vs-catalogue split and write it down honestly.
 
----
+**Days 5–9 — Phase B, the surface.** Landing page that can be *heard* before
+signup. Rebuild the studio UI. Accounts and credits in rupees.
 
-## 12. The next two weeks
+**Days 10–12 — Phase C, serving.** Run it on one Mac behind a queue. Instrument
+cost per generation. Do not port to CUDA yet.
 
-**Days 1–3 — Phase 0.**
-Spike Chatterbox Multilingual on Hindi. Round-trip score against IndicF5. Measure
-RTF and the duration ratio. If it holds: rip out `f5-tts`, retire `indic_engine`
-and the remote-TTS split, update `models.py`, get `voice-doctor` to exit 0 with
-everything installed. Write the decision into the README.
+**Days 13–14 — Phase D.** The recording endpoint (§14). It costs little and it
+starts accumulating the one asset that compounds.
 
-**Days 4–7 — the demo that sells.**
-Fix the Qwen3 repetition loop. Drive Hindi toward RTF < 1 and get the live loop
-bilingual. Record the offline demo with the network off.
-
-**Days 8–10 — evidence.**
-Pull the SpeechArenaBench code-mixed subset. Generate your conditions. Produce
-the measured spec sheet — latency, RTF, memory, CER, round-trip against its real
-ceiling. Publish the ceiling.
-
-**Days 11–14 — first conversations.**
-Apply to the IndiaAI Compute Portal. Write to AI4Bharat about SpeechArenaBench
-and what it changed here. Find ten people in regulated Indian enterprises or at
-Indic-hardware OEMs and send them a link to the offline demo. Ask for fifteen
-minutes.
-
-**Not in the next two weeks:** recording sprint, fine-tuning, other languages,
-self-serve platform, incorporation.
+**Not in the next two weeks:** CUDA port, fine-tuning, SOC 2, telephony
+integrations, the enterprise motion. All real, none of them first.
 
 ---
 
-## 13. If you only do five things
+## 12. If you only do five things
 
-1. **Swap Hindi to Chatterbox Multilingual.** It is MIT, already installed,
-   ~2× faster, and it closes every blocking licence item in one commit.
-2. **Make the live loop bilingual.** A Hindi agent you can talk to is the
-   product; type-and-listen is a demo of a component.
-3. **Ship a self-contained bundle.** Nobody installs a `.venv` to evaluate you.
-4. **Record the offline demo with the network off**, and publish the spec sheet
-   including your own ceilings. The honesty is the differentiator.
-5. **Stop trying to beat ElevenLabs at Hindi.** That race has 120,000 pairwise
-   comparisons saying it is over. Win the one nobody has entered.
+1. **Get past Hindi.** Five Indian languages, each measured. Everything else on
+   this plan is downstream of it, and it is the one that can fail.
+2. **Make the landing page playable.** A voice product that cannot be heard
+   before signup is failing at its only demonstration.
+3. **Charge in rupees, over UPI.** The market this is named after does not carry
+   dollar-denominated cards.
+4. **Know your cost per generation before you price.** Sarvam's ₹2.70/minute is
+   the ceiling and the margin lives under it. Hosted inference is a COGS line
+   now, not a constraint the code enforces away.
+5. **Keep the licence audit and the claims register.** They cost nothing to
+   maintain and they are why this project has never had to retract a number.
+   §1.1 is what happens to people who skip them.
 
 ---
 
-*Every number here was checked on 2026-08-14 against the sources linked inline.
-The Chatterbox finding was verified against the code in this repo's own `.venv`.
-Re-check the pricing and competitive claims before quoting them to a customer —
-Bulbul v4 is already announced and this field moves in weeks.*
+## 13. What did not change
+
+Worth stating plainly, because a reframe this size invites throwing out things
+that were never strategy-dependent:
+
+- **Sections 1 and 2 are evidence, not opinion**, and they still hold. Rendered
+  audio *is* commoditising; ElevenLabs *is* strong at Hindi; Sarvam *is* ₹2.70 a
+  minute. The platform has to be built with those true, not by forgetting them.
+- **`outreach/CLAIMS.md` governs marketing copy**, and applies harder now that
+  copy will be public and permanent rather than in ten emails.
+- **Round trip is an alarm, never a ranking** — AUC 0.625 among working systems.
+  This does not become less true because the product is now a website.
+- **The licence audit stays a build gate.** It is the cheapest diligence artifact
+  in the company and the reason the dependency tree is clean.
+- **Consent records stay mandatory for cloning.** They are now a *product*
+  feature and a legal necessity, not an internal nicety.
+- **Publish your own ceilings.** It was the credibility move for enterprise
+  buyers and it is the credibility move for developers reading docs.
+
+---
+
+## 14. The recording flywheel — assessment
+
+The founder's proposal: after a generation in a given voice, let that speaker
+record the same line, keep both, compare, and use it to improve the voice.
+
+**The data shape is excellent, and this is the strongest idea in this document.**
+It produces `(text, synthetic, real, same speaker, same sentence)` — an aligned
+parallel corpus, collected from real usage, with consent already attached
+because the speaker is the one recording. That is precisely the corpus a
+fine-tune wants and it is normally expensive to buy. Every generation becomes a
+chance to acquire one, and the people most motivated to record are the ones who
+care most about their own voice quality. It compounds, and no competitor gets it
+for free.
+
+**Three corrections to how it was described, none fatal:**
+
+1. **Comparison is not training.** Nothing trains from a diff. This builds a
+   *dataset* and a *measurement*; the training is a separate, later, GPU-bound
+   step (IndiaAI, §8 of the old plan). Expect the flywheel to pay off in months,
+   not on the next generation.
+2. **Not on this machine.** An 18 GiB Mac cannot fine-tune a TTS model, and the
+   per-voice fine-tune path was retired with IndicF5 (§4). It has to be rebuilt
+   on Chatterbox and run on rented compute.
+3. **Beware the obvious metric.** Round trip cannot judge naturalness, so it
+   cannot score the pair. What a *matched* pair genuinely supports, and what
+   nothing else in this project has, is: duration ratio per line (we know
+   synthetic runs 0.81× — this measures it per sentence rather than in
+   aggregate), F0 and prosody contour comparison against a real reference of the
+   *same words*, and a proper A/B where a listener is asked which is the human.
+   That last one is the identity test `eval/abtest.py` already implements.
+
+**So it is worth building now**, for the data and the measurement, provided the
+UI does not promise the user that their voice improves immediately. It does not.
+
+**Do it as a first-class product feature, not a hidden telemetry hook.** Framed
+as *"help your voice get better — read this line"* it is a consented,
+transparent, opt-in contribution with a visible payoff. Framed as silent
+collection it is a privacy incident in a company whose entire credibility rests
+on the opposite. The consent machinery in `voice_clone/store.py` already models
+this correctly and the endpoint should reuse it rather than invent a second path.
