@@ -1,0 +1,313 @@
+<meta charset="utf-8">
+<title>Swar Studio</title>
+<style>
+  :root {
+    --ink:      #0C1614;
+    --panel:    #112120;
+    --panel-2:  #162B28;
+    --line:     #22403B;
+    --text:     #E9F1ED;
+    --dim:      #8CA79F;
+    --brass:    #D8A94B;
+    --brass-dim:#8A6E2F;
+    --live:     #E5533D;
+    --radius: 3px;
+    --dev: "Kohinoor Devanagari", "Devanagari Sangam MN", "Noto Sans Devanagari", sans-serif;
+    --ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--ink); color: var(--text);
+    font-family: var(--ui); line-height: 1.55; -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 780px; margin: 0 auto; padding: 0 1.5rem; }
+  a { color: var(--brass); }
+
+  .eyebrow {
+    font-family: var(--mono); font-size: .7rem; letter-spacing: .16em;
+    text-transform: uppercase; color: var(--brass-dim);
+  }
+  nav {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 1.4rem 0; border-bottom: 1px solid var(--line);
+  }
+  .mark { display: flex; align-items: baseline; gap: .55rem; text-decoration: none; color: inherit; }
+  .mark .dev { font-family: var(--dev); font-size: 1.5rem; color: var(--brass); line-height: 1; }
+  .mark .lat { font-size: 1.05rem; font-weight: 600; }
+
+  main { padding: 2.6rem 0 5rem; }
+  h1 { font-size: 1.6rem; letter-spacing: -.02em; margin: .6rem 0 0; font-weight: 650; }
+  .lede { color: var(--dim); margin: .7rem 0 0; max-width: 52ch; }
+
+  label { display: block; margin: 2rem 0 .6rem; font-size: .88rem; color: var(--dim); }
+
+  select, textarea {
+    width: 100%; font: inherit; color: var(--text);
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: .8rem .9rem;
+  }
+  textarea { font-family: var(--dev); font-size: 1.05rem; min-height: 8.5rem; resize: vertical; }
+  select:focus, textarea:focus { outline: none; border-color: var(--brass-dim); }
+  :focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+
+  .meta {
+    display: flex; justify-content: space-between; gap: 1rem;
+    font-family: var(--mono); font-size: .7rem; letter-spacing: .06em;
+    color: var(--dim); margin-top: .5rem;
+  }
+  .meta .over { color: var(--live); }
+
+  .row { display: flex; flex-wrap: wrap; gap: .8rem; align-items: center; margin-top: 1.6rem; }
+  button {
+    font: inherit; font-size: .93rem; cursor: pointer; border-radius: var(--radius);
+    padding: .78rem 1.5rem; border: 1px solid var(--brass);
+    background: var(--brass); color: #14100A; font-weight: 600;
+  }
+  button:hover:not(:disabled) { background: #E7BC5F; }
+  button:disabled { opacity: .5; cursor: default; }
+  button.ghost { background: var(--panel); border-color: var(--line); color: var(--text); font-weight: 400; }
+  button.ghost:hover:not(:disabled) { border-color: var(--brass-dim); background: var(--panel); }
+
+  /* Status is one line that changes meaning, not a stack of transient toasts —
+     during a wait the person is watching this exact spot. */
+  #status { margin-top: 1.4rem; font-size: .9rem; min-height: 1.4em; color: var(--dim); }
+  #status.err { color: var(--live); }
+  #status.work { color: var(--brass); }
+
+  .out { margin-top: 1.6rem; display: none; }
+  .out.show { display: block; }
+  audio { width: 100%; margin-bottom: .9rem; }
+  .stats {
+    font-family: var(--mono); font-size: .7rem; letter-spacing: .06em;
+    color: var(--dim); display: flex; flex-wrap: wrap; gap: 1.2rem; margin-top: .8rem;
+  }
+
+  .note {
+    border-left: 2px solid var(--brass-dim); padding: .1rem 0 .1rem 1.1rem;
+    margin-top: 3rem; color: var(--dim); font-size: .85rem; max-width: 58ch;
+  }
+  .offline-warn {
+    border: 1px solid var(--live); border-radius: var(--radius);
+    padding: 1rem 1.1rem; margin-top: 1.6rem; font-size: .9rem; display: none;
+  }
+  .offline-warn.show { display: block; }
+  .offline-warn b { color: var(--live); }
+</style>
+
+<div class="wrap">
+  <nav>
+    <a class="mark" href="/">
+      <span class="dev">स्वर</span><span class="lat">Swar</span>
+    </a>
+    <span class="eyebrow">Studio · preview</span>
+  </nav>
+</div>
+
+<main class="wrap">
+  <div class="eyebrow">Generate</div>
+  <h1>Type Hindi or English. Hear it back.</h1>
+  <p class="lede">Mix both in one sentence — that is what this is built for.
+    Nothing is stored: the text is used to make the audio and then dropped.</p>
+
+  <div class="offline-warn" id="offlineWarn">
+    <b>Can't reach the studio.</b>
+    <div id="offlineDetail" style="color:var(--dim); margin-top:.35rem"></div>
+  </div>
+
+  <label for="voice">Voice</label>
+  <select id="voice"><option>Loading…</option></select>
+
+  <label for="text">What should it say?</label>
+  <textarea id="text" placeholder="मैंने कल रात एक documentary देखी जो climate change के बारे में थी।"
+            spellcheck="false"></textarea>
+  <div class="meta">
+    <span id="script">—</span>
+    <span id="count">0</span>
+  </div>
+
+  <div class="row">
+    <button id="go">Generate</button>
+    <button class="ghost" id="sample">Use an example</button>
+  </div>
+
+  <div id="status"></div>
+
+  <div class="out" id="out">
+    <audio id="player" controls></audio>
+    <button class="ghost" id="download">Download WAV</button>
+    <div class="stats" id="stats"></div>
+  </div>
+
+  <div class="note">
+    A preview running on a single machine, so it generates one request at a
+    time — if someone else is ahead of you, you will be told where you are in
+    the queue rather than left guessing. Hindi and English only for now.
+  </div>
+</main>
+
+<script src="/config.js"></script>
+<script>
+  const API = window.SWAR_API;
+  const $ = (id) => document.getElementById(id);
+  const MAX_CHARS = 3000;
+
+  let blobUrl = null;
+  let busy = false;
+  let pollTimer = null;
+
+  const setStatus = (msg, kind = "") => {
+    $("status").textContent = msg;
+    $("status").className = kind;
+  };
+
+  // --- voices -------------------------------------------------------------
+  async function loadVoices() {
+    try {
+      const res = await fetch(`${API}/api/voices`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const voices = await res.json();
+      const sel = $("voice");
+      sel.innerHTML = "";
+      if (!voices.length) {
+        sel.innerHTML = "<option>No voices enrolled yet</option>";
+        $("go").disabled = true;
+        return;
+      }
+      for (const v of voices) {
+        const opt = document.createElement("option");
+        opt.value = v.profile_id;
+        opt.textContent = `${v.speaker_name} · ${v.duration_seconds}s reference`;
+        sel.appendChild(opt);
+      }
+      $("offlineWarn").classList.remove("show");
+    } catch (e) {
+      // Named plainly. The likely cause is the laptop being asleep or the
+      // tunnel having been restarted with a new hostname, and saying so beats
+      // a generic failure the visitor cannot act on.
+      $("offlineWarn").classList.add("show");
+      $("offlineDetail").textContent =
+        "The machine that generates the audio is not answering right now. " +
+        "It is one computer, so this happens when it is asleep or restarting.";
+      $("go").disabled = true;
+    }
+  }
+
+  // --- text ---------------------------------------------------------------
+  // Escapes, not literal characters: a literal class here was mis-decoded
+  // once and threw a SyntaxError that took the whole script down with it,
+  // leaving the page silently dead behind a 'Loading...' voice picker.
+  const DEVANAGARI = /[\u0900-\u097F]/;
+  function describe(text) {
+    const hasDev = DEVANAGARI.test(text);
+    const hasLatin = /[A-Za-z]/.test(text);
+    if (hasDev && hasLatin) return "Hindi + English";
+    if (hasDev) return "Hindi";
+    if (hasLatin) return "English";
+    return "—";
+  }
+
+  $("text").addEventListener("input", () => {
+    const text = $("text").value;
+    const n = text.trim().length;
+    $("count").textContent = `${n} / ${MAX_CHARS}`;
+    $("count").className = n > MAX_CHARS ? "over" : "";
+    $("script").textContent = describe(text);
+    $("go").disabled = busy || n === 0 || n > MAX_CHARS;
+  });
+
+  $("sample").onclick = () => {
+    $("text").value =
+      "मैंने कल रात एक documentary देखी जो climate change के बारे में थी।";
+    $("text").dispatchEvent(new Event("input"));
+  };
+
+  // --- the wait -----------------------------------------------------------
+  // Polled while generating so a queued person sees a position rather than a
+  // spinner. Watching a spinner is what makes people click again, and clicking
+  // again is what makes a single-machine backend slower rather than sooner.
+  async function pollQueue() {
+    try {
+      const q = await (await fetch(`${API}/api/queue`)).json();
+      if (q.waiting > 0) {
+        setStatus(`Waiting — ${q.waiting} ahead of you, about ${Math.ceil(q.eta_seconds)}s.`, "work");
+      } else {
+        setStatus("Generating…", "work");
+      }
+    } catch {
+      /* The generation request itself reports failures; a failed poll is noise. */
+    }
+  }
+
+  // --- generate -----------------------------------------------------------
+  $("go").onclick = async () => {
+    const text = $("text").value.trim();
+    if (!text || busy) return;
+
+    busy = true;
+    $("go").disabled = true;
+    $("out").classList.remove("show");
+    setStatus("Generating…", "work");
+    pollQueue();
+    pollTimer = setInterval(pollQueue, 1500);
+
+    const body = new FormData();
+    body.append("text", text);
+    body.append("profile_id", $("voice").value);
+    body.append("format", "wav");
+
+    try {
+      const res = await fetch(`${API}/api/speak`, { method: "POST", body });
+
+      if (!res.ok) {
+        // The server writes its own refusals carefully — a full queue, a rate
+        // limit, an unsupported language, not enough free memory — so show
+        // what it said rather than inventing a generic message over the top.
+        let detail = `Something went wrong (HTTP ${res.status}).`;
+        try {
+          const j = await res.json();
+          if (j.detail) detail = j.detail;
+        } catch { /* not JSON; keep the generic line */ }
+        throw new Error(detail);
+      }
+
+      const blob = await res.blob();
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
+      blobUrl = URL.createObjectURL(blob);
+      $("player").src = blobUrl;
+      $("out").classList.add("show");
+      $("player").play().catch(() => {});
+
+      const h = (name) => res.headers.get(name);
+      const secs = parseFloat(h("X-Audio-Seconds") || "0");
+      const rtf = h("X-Realtime-Factor");
+      const queued = parseFloat(h("X-Queued-Seconds") || "0");
+      const chars = h("X-Billable-Characters");
+      $("stats").innerHTML = [
+        `${secs.toFixed(2)}s audio`,
+        rtf ? `${rtf}x real time` : "",
+        queued > 0.05 ? `${queued.toFixed(1)}s queued` : "",
+        chars ? `${chars} characters` : "",
+      ].filter(Boolean).map((s) => `<span>${s}</span>`).join("");
+
+      setStatus("Done.", "");
+    } catch (e) {
+      setStatus(e.message, "err");
+    } finally {
+      clearInterval(pollTimer);
+      busy = false;
+      $("text").dispatchEvent(new Event("input"));
+    }
+  };
+
+  $("download").onclick = () => {
+    if (!blobUrl) return;
+    const a = document.createElement("a");
+    a.href = blobUrl;
+    a.download = "swar.wav";
+    a.click();
+  };
+
+  loadVoices();
+  $("text").dispatchEvent(new Event("input"));
+</script>
