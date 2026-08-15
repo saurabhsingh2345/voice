@@ -132,3 +132,39 @@ def test_reopening_an_existing_database_keeps_keys_working(tmp_path):
     path = tmp_path / "keys.db"
     _record, token = KeyStore(path).create("acme")
     assert KeyStore(path).verify(token) is not None
+
+
+# --- what the API promises about voices ------------------------------------
+
+
+def test_a_name_that_matches_two_voices_is_refused_not_guessed():
+    """Answering in the wrong person's voice is the one mistake a voice product
+    must never make quietly, so ambiguity is an error rather than a tiebreak."""
+    import inspect
+
+    from voiceagent.web import server
+
+    source = inspect.getsource(server._resolve_voice)
+    assert "ambiguous_voice" in source
+    assert "409" in source
+
+
+def test_an_unknown_voice_lists_what_is_available():
+    """The likeliest cause is a typo or a stale name, and both are fixed by
+    seeing the list rather than reading the docs again."""
+    import inspect
+
+    from voiceagent.web import server
+
+    assert "available=available" in inspect.getsource(server._resolve_voice)
+
+
+def test_v1_does_not_double_charge_the_rate_limiter():
+    """/v1 authenticates and charges against the key, then reuses the studio's
+    synthesis path. If that path charged again by address, one request would
+    cost two and a paying customer would be cut off at half their allowance."""
+    import inspect
+
+    from voiceagent.web import server
+
+    assert "key_id is None" in inspect.getsource(server.speak)

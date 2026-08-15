@@ -26,6 +26,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from voiceagent import version
 from voiceagent.text.detect import detect
+from voiceagent.web.keys import ApiKey, KeyStore
 from voiceagent.web.metering import FAILED, OK, REJECTED, Meter, Usage, characters_of
 from voiceagent.web.public import (
     PublicSurface,
@@ -159,6 +160,10 @@ synth_queue = SynthesisQueue()
 #: Usage accounting. Opened once at import so a failure to create the database
 #: is a startup error rather than a surprise on the first paid request.
 meter = Meter()
+
+#: API keys for `/v1`. Same reasoning: fail at startup, not on a customer's
+#: first authenticated call.
+key_store = KeyStore()
 
 #: Until accounts exist, everything bills to one tenant. Named rather than
 #: blank so the rows written today are still readable once real accounts land,
@@ -614,6 +619,7 @@ async def speak(
     profile_id: str = Form(...),
     format: str = Form("wav"),
     account: str = Form(DEFAULT_ACCOUNT),
+    key_id: str | None = None,
 ) -> Response:
     # Declared up front: this function both reads it (in the busy check) and
     # writes it (when synthesis starts), and Python requires the declaration
@@ -650,8 +656,11 @@ async def speak(
     # Checked before any work, because the point is to not spend the machine on
     # it. Only consulted in public mode: a local user rate-limiting themselves
     # would be a bug, not a protection.
+    # `key_id` set means /v1 already authenticated and already charged the
+    # limiter against that key. Checking again here would bill one request
+    # twice and cut a paying customer off at half their allowance.
     caller = client_ip(request)
-    if is_public():
+    if is_public() and key_id is None:
         refusal = rate_limiter.check(caller, billable)
         if refusal:
             _meter_quietly(
@@ -756,6 +765,7 @@ async def speak(
         _meter_quietly(
             Usage(
                 account=account,
+                key_id=key_id,
                 characters=billable,
                 status=REJECTED,
                 language=detection.language,
@@ -773,6 +783,7 @@ async def speak(
         _meter_quietly(
             Usage(
                 account=account,
+                key_id=key_id,
                 characters=billable,
                 status=FAILED,
                 language=detection.language,
@@ -791,6 +802,7 @@ async def speak(
         _meter_quietly(
             Usage(
                 account=account,
+                key_id=key_id,
                 characters=billable,
                 status=FAILED,
                 language=detection.language,
@@ -824,6 +836,7 @@ async def speak(
     _meter_quietly(
         Usage(
             account=account,
+            key_id=key_id,
             characters=billable,
             status=OK,
             language=detection.language,
@@ -1457,3 +1470,169 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+# --- the developer API ----------------------------------------------------
+#
+# Versioned under /v1 and deliberately unlike the /api routes the studio uses.
+# Those are an internal contract between this server and a page we ship
+# together, and they change when the page changes. This one is a promise to
+# someone else's codebase, so it is named separately, authenticated per request,
+# and takes a *voice name* rather than an internal profile id -- a caller should
+# write voice="saurabh", not a hex string they have to look up and that means
+# nothing when it appears in their logs.
+
+
+class ApiError(HTTPException):
+    """An error shaped for a machine, and readable by the person debugging it."""
+
+    def __init__(self, status: int, code: str, message: str, **extra) -> None:
+        super().__init__(status, {"error": {"code": code, "message": message, **extra}})
+
+
+def _authenticate(request: Request) -> ApiKey:
+    """Resolve `Authorization: Bearer ...` to a key, or refuse.
+
+    401 with a message that names the header, because the single most common
+    integration failure is a key sent the wrong way, and "Unauthorized" alone
+    sends a developer looking for a problem in their key rather than their
+    header.
+    """
+    header = request.headers.get("authorization", "")
+    scheme, _, token = header.partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        raise ApiError(
+            401,
+            "missing_key",
+            "Send your key as an Authorization header: "
+            "`Authorization: Bearer swar_live_...`.",
+        )
+    key = key_store.verify(token.strip())
+    if key is None:
+        raise ApiError(
+            401,
+            "invalid_key",
+            "That key is not valid, or it has been revoked. Keys are shown once "
+            "when created; if it was lost, revoke it and mint another.",
+        )
+    return key
+
+
+def _resolve_voice(name: str):
+    """Find a consented profile by speaker name, case-insensitively.
+
+    Names are what the API takes, so ambiguity is a real possibility once two
+    speakers share one. Refusing beats guessing: silently picking the older
+    `priya` would answer in the wrong person's voice, which is the one mistake
+    a voice product must never make quietly.
+    """
+    wanted = (name or "").strip().lower()
+    if not wanted:
+        raise ApiError(400, "missing_voice", "A `voice` is required, e.g. \"saurabh\".")
+
+    matches = [p for p in store.list() if p.speaker_name.strip().lower() == wanted]
+    if not matches:
+        available = sorted(p.speaker_name for p in store.list())
+        raise ApiError(
+            404,
+            "unknown_voice",
+            f"No voice called {name!r}.",
+            available=available,
+        )
+    if len(matches) > 1:
+        raise ApiError(
+            409,
+            "ambiguous_voice",
+            f"More than one voice is called {name!r}. Ask us to rename one; "
+            "answering in the wrong person's voice is not a risk we will take.",
+            profile_ids=[p.profile_id for p in matches],
+        )
+    return matches[0]
+
+
+@app.get("/v1/voices")
+async def v1_voices(request: Request) -> dict:
+    """The voices this key may generate with."""
+    _authenticate(request)
+    return {
+        "voices": [
+            {
+                "name": p.speaker_name,
+                "reference_seconds": round(p.duration_seconds, 1),
+                "languages": ["hi", "en"],
+            }
+            for p in store.list()
+        ]
+    }
+
+
+@app.get("/v1/usage")
+async def v1_usage(request: Request, since: str | None = None) -> dict:
+    """What this key has spent. Same numbers the invoice would be built from."""
+    key = _authenticate(request)
+    return meter.totals(key.account, since=since)
+
+
+@app.post("/v1/speech")
+async def v1_speech(request: Request) -> Response:
+    """Text in, audio out.
+
+    Accepts JSON, because that is what a developer expects to send and the
+    studio's multipart form is an artefact of uploading files rather than a
+    design. The response is the audio itself rather than a URL: there is no
+    object store behind this, and a link that expires is a worse contract than
+    bytes that do not.
+    """
+    key = _authenticate(request)
+
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        raise ApiError(400, "invalid_json", "The request body must be JSON.") from None
+
+    text = (body.get("text") or "").strip()
+    voice_name = body.get("voice") or ""
+    fmt = (body.get("format") or "mp3").lower()
+
+    if not text:
+        raise ApiError(400, "missing_text", "`text` is required.")
+    if len(text) > MAX_SPEAK_CHARS:
+        raise ApiError(
+            413,
+            "text_too_long",
+            f"`text` is {len(text)} characters; the limit is {MAX_SPEAK_CHARS}.",
+            limit=MAX_SPEAK_CHARS,
+        )
+    if fmt not in OUTPUT_FORMATS:
+        raise ApiError(
+            400,
+            "unsupported_format",
+            f"Unknown format {fmt!r}.",
+            supported=sorted(OUTPUT_FORMATS),
+        )
+
+    profile = _resolve_voice(voice_name)
+    billable = characters_of(text)
+
+    # Rate limited by key, not by address: a customer behind one office NAT is
+    # one caller, and two customers on the same cloud provider are not.
+    refusal = rate_limiter.check(f"key:{key.key_id}", billable)
+    if refusal:
+        _meter_quietly(
+            Usage(account=key.account, key_id=key.key_id, characters=billable,
+                  status=REJECTED, voice=profile.profile_id, detail="rate limited")
+        )
+        raise ApiError(429, "rate_limited", refusal)
+    rate_limiter.record(f"key:{key.key_id}", billable)
+
+    # Reuses the studio's path exactly -- same queue, same engine, same
+    # normalisation. Two synthesis paths would drift, and the one that drifted
+    # would be whichever had fewer eyes on it.
+    return await speak(
+        request=request,
+        text=text,
+        profile_id=profile.profile_id,
+        format=fmt,
+        account=key.account,
+        key_id=key.key_id,
+    )

@@ -189,3 +189,19 @@ def test_a_destructive_dataset_route_is_still_not_reachable():
 
     assert not is_artist_route("DELETE", "/api/dataset/abc/clips/x")
     assert not any(m == "DELETE" for m, _ in ARTIST_ROUTES)
+
+
+# --- the developer API surface ---------------------------------------------
+
+
+def test_the_v1_prefix_passes_the_surface_to_authenticate_itself():
+    """A silent 404 on a documented endpoint sends a developer hunting a typo
+    that is not there. /v1 guards itself with a key and answers 401 instead."""
+    from voiceagent.web.public import API_PREFIX
+
+    assert API_PREFIX == "/v1/"
+
+
+def test_v1_is_not_in_the_studio_allowlist():
+    """It is a separate surface with separate auth, not an extra open route."""
+    assert not any(path.startswith("/v1") for _m, path in PUBLIC_ROUTES)

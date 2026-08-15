@@ -72,6 +72,14 @@ ARTIST_ROUTES: frozenset[tuple[str, str]] = frozenset(
 #: the artist's own recording session.
 ARTIST_PREFIXES: tuple[tuple[str, str], ...] = (("GET", "/api/dataset/"),)
 
+#: The developer API. Reachable from anywhere and authenticated per request by
+#: an API key, which the endpoints check themselves --- this surface only has to
+#: let them through. Kept as a prefix so a new `/v1` route is available the
+#: moment it is written, which is the opposite of the rule for `/api`: there,
+#: forgetting to add a route to the allowlist fails safe, and here, forgetting
+#: would only break a documented endpoint whose own auth is already mandatory.
+API_PREFIX = "/v1/"
+
 ENV_INVITE = "VOICEAGENT_INVITE_CODE"
 
 #: The header the page sends. Also accepted as a form field, because a browser
@@ -216,6 +224,14 @@ class PublicSurface(BaseHTTPMiddleware):
             return await call_next(request)
 
         method, path = request.method, request.url.path
+
+        #: The developer API guards itself, per request, with a key. Letting it
+        #: through here is not a gap: an unauthenticated call to /v1 is refused
+        #: by the endpoint, with a 401 that says how to authenticate --- which is
+        #: the right answer for a documented API, where a silent 404 would send
+        #: a developer hunting a typo that is not there.
+        if path.startswith(API_PREFIX):
+            return await call_next(request)
 
         if is_artist_route(method, path):
             expected = invite_code()
