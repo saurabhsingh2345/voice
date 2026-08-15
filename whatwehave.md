@@ -43,7 +43,10 @@ Hard constraints the code enforces:
 | Licence audit | **green** | `voice-doctor` exits 0 with every extra installed |
 | Outreach material | **written, unsent** | `outreach/` — claims register, one-pager, emails, call guide, pricing, target filter |
 
-Entry points: `voice-doctor`, `voice-web`, `voice-chat`. 395 tests.
+Entry points: `voice-doctor`, `voice-web`, `voice-chat`. 566 tests.
+
+`voice-web` prints the source revision it loaded at startup and shows a banner
+when the checkout has moved on underneath it — see the note in Limitations.
 
 ## Architecture
 
@@ -126,6 +129,15 @@ Chatterbox rather than IndicF5 (Phase 12 — licence tree, and it measured bette
   counts how often it fires; baseline was ~1 in 80.
 - Machine reality: 18 GB Mac, often 2–5 GB free — models load and evict per
   language; LLM fine-tuning is off the table here.
+- **A long-running `voice-web` does not pick up code changes**, and used to fail
+  obscurely because of it: a server left up across the Chatterbox migration kept
+  serving Hindi through the deleted `indic_engine`, whose `f5-tts` had been
+  uninstalled beneath it. Every Hindi request failed while the checkout was
+  correct. `voiceagent.version` now compares source mtimes against the moment of
+  import and the UI says so, but the *fix* is still to restart. The check
+  watches this project's source only — a `uv sync` that changes installed
+  dependencies without touching `src/` is invisible to it, and that was half of
+  what broke the server in the first place. Restart after `uv sync` regardless.
 
 ## Future plan
 
