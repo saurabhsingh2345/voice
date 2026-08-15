@@ -13,9 +13,13 @@ TTS is commoditising, ElevenLabs is genuinely strong at Hindi, Sarvam sells at
 ₹2.70 a finished minute. The platform has to be built with those facts true, not
 by forgetting them. §13 lists what else did not change and why.
 
-Two things in §3 are new and neither is optional: **we speak one Indian
-language and the plan needs several** (§3.1), and **hosted inference retires
-the zero-recurring-cost constraint the codebase was built on** (§3.2).
+One thing in §3 is new and not optional: **we speak one Indian language and the
+plan needs several** (§3.1).
+
+**The architecture does not change.** MLX on Apple Silicon, served from hardware
+already owned. Constraint 3 — "zero recurring cost" — means *we* do not spend,
+not that the product is free; we charge from the first generation. §3.2 covers
+what that costs in capacity, which is real and is a queue, not a rewrite.
 
 ---
 
@@ -307,33 +311,46 @@ order they should be tried:
 than shipping no Tamil: §1.1 is what a public quality ranking does to a company
 that got ahead of its evidence.
 
-### 3.2 The architectural inversion: hosted inference
+### 3.2 Serving, on hardware we already own
 
-Constraint 3 in `README.md` and `whatwehave.md` reads *"Zero recurring cost —
-local inference only."* A paid website and an API mean **someone else's request
-runs on our hardware**, on our electricity bill, at our latency. That constraint
-is retired for the hosted product and **kept for the desktop app**, which is
-what makes the two tiers genuinely different rather than the same thing priced
-twice.
+**Corrected 2026-08-15.** An earlier draft of this section read constraint 3 —
+*"Zero recurring cost — local inference only"* — as "the product is free" and
+concluded the constraint had to be retired. That is backwards. It means **we do
+not spend money**, because there is no budget to spend. We charge from the first
+generation; what we do not do is take on a monthly bill before there is revenue
+to cover it.
 
-The awkward part is specific: **the entire stack is MLX, which runs only on
-Apple Silicon.** There is no Linux or CUDA path today. Three ways out, and the
-first is better than it sounds:
+So the architecture does not change:
 
-1. **Serve from Mac hardware.** MLX runs fine; a Mac mini or Studio fleet is a
-   real, boring, cheap way to serve early volume, and it needs *zero* porting.
-   This is the launch answer.
-2. **Port to PyTorch/CUDA.** Chatterbox's original implementation *is* PyTorch —
-   `mlx-audio` is a port of it, and the weights are the same MIT checkpoint. So
-   this is a rewrite of our engine wrapper, not of the model. This is the scale
-   answer, and it unlocks IndiaAI GPUs.
-3. Both: Macs for launch, GPUs when queue depth says so.
+- **The stack stays MLX on Apple Silicon.** No CUDA port, no PyTorch rewrite, no
+  rented GPUs. Those were answers to a scale problem we do not have.
+- **Inference runs on the Mac we already own**, reached over a tunnel. Marginal
+  cost is electricity.
+- **The desktop app runs on the customer's machine**, where the cost is theirs
+  and the privacy is the product.
 
-Two things follow immediately. **Cost per generation becomes a number we must
-know**, because Sarvam sells at ₹2.70/finished minute and Bhashini is ~free —
-that is the price ceiling and the margin has to live under it. And **the spec
-sheet's job changes**: it stops being a buyer-facing credibility artifact and
-becomes capacity planning.
+The constraint this *does* impose is capacity, and it should be planned for
+honestly rather than discovered:
+
+- Synthesis is **serialized** — `web/server.py` holds one lock and refuses
+  rather than queues. That is a correctness requirement, not a tuning choice:
+  both engines are shared mutable objects and the Indic path calls
+  `set_reference()` on the shared instance, so two overlapping requests could
+  answer one in the other's voice.
+- At RTF ~0.55 that is roughly **one user at a time**, and on the order of half
+  an hour of finished audio per hour of wall clock.
+- Hindi needs ~3.0 GiB free and this machine often has 4–7. Memory, not compute,
+  is the first ceiling.
+
+None of that blocks a first paying customer; all of it blocks a launch that
+promises concurrency. **Refusing is the wrong behaviour for a paid product** —
+the 429 that suits a developer tool reads as broken to a customer — so a real
+queue with a position and an honest wait is the one serving change worth making
+before charging anyone.
+
+Cost per generation is still worth knowing, but as a *pricing* input rather than
+a survival one: Sarvam sells at ₹2.70 a finished minute and Bhashini is roughly
+free, and that is the ceiling to price under.
 
 ### 3.3 What the competition actually sells, which is not just a model
 
@@ -556,16 +573,22 @@ The website is the company now. Concretely:
 - **Desktop app** as the offline tier, signed and notarised. It already exists
   (§5) and is 90% of a premium SKU nobody else can offer.
 
-### Phase C — Serving
+### Phase C — Serving, unchanged architecture
 
-- Launch on **Mac hardware**; it needs no porting (§3.2).
-- Instrument **cost per generation** from day one. The price ceiling is Sarvam's
-  ₹2.70/finished minute and the margin has to live under it.
-- Queue, per-key rate limits, and a hard concurrency cap. The synthesis lock in
-  `web/server.py` is already the right shape and already refuses rather than
-  queues — that decision survives.
-- Port to PyTorch/CUDA when queue depth demands it, not before. The weights are
-  the same MIT checkpoint; it is our wrapper that is MLX-specific.
+- **Serve from the Mac we own**, over a tunnel. No port, no rented GPU, no
+  monthly bill before there is revenue.
+- **Replace refusal with a queue.** `/api/speak` currently returns 429 when busy.
+  That is right for a developer tool and wrong for something someone paid for:
+  a customer reads it as broken. A position in line and an honest wait is the
+  one serving change that must land before charging anyone.
+- **Plan for one generation at a time.** The synthesis lock is a correctness
+  requirement (shared mutable engines, `set_reference` on the shared instance),
+  so concurrency is 1 by design, not by tuning. Roughly half an hour of finished
+  audio per hour of wall clock.
+- **Memory is the first ceiling, not compute.** Hindi needs ~3.0 GiB free on a
+  machine that often has 4–7.
+- Instrument characters generated per account from the first request. It is the
+  billing unit and it is unrecoverable if not captured from the start.
 
 ### Phase D — The recording flywheel
 
