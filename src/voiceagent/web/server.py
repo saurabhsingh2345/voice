@@ -25,6 +25,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from voiceagent import version
 from voiceagent.text.detect import detect
+from voiceagent.web.metering import FAILED, OK, REJECTED, Meter, Usage, characters_of
+from voiceagent.web.queue import Full as QueueFull
+from voiceagent.web.queue import SynthesisQueue
 from voiceagent.text.normalize_hi import normalize as normalize_hi
 from voiceagent.tts.chatterbox_indic import (
     UnsupportedLanguage,
@@ -78,20 +81,23 @@ dataset = VoiceDataset(profiles=store)
 _indic_engine = None
 _indic_lock = asyncio.Lock()
 
-#: Serializes synthesis. This is a correctness requirement before it is a
-#: performance one: both engines are single shared mutable objects, and the Indic
-#: path calls `set_reference()` on the shared instance. Two overlapping requests
-#: for different voices would have the second overwrite the first's reference,
-#: so a request could be answered in someone else's voice.
+#: Serialization moved to `synth_queue` below, which owns the lock now. The
+#: reason for it is unchanged and worth keeping in front of whoever tries to
+#: raise concurrency: it is a **correctness** requirement before a performance
+#: one. Both engines are single shared mutable objects and the Indic path calls
+#: `set_reference()` on the shared instance, so two overlapping requests for
+#: different voices would have the second overwrite the first's reference --- and
+#: a request could be answered in someone else's voice.
 #:
 #: It also prevents the failure that actually bit: on an 18 GiB machine with
 #: ~1.5 GiB free, two concurrent Indic requests thrash. Observed state was a
 #: process in uninterruptible I/O wait at 0.3% CPU with RSS *shrinking* (94 ->
 #: 63 MiB, the model paging out), 68 MiB free against 14.9 GiB of swap, and zero
 #: progress. Neither request could finish.
-_synth_lock = asyncio.Lock()
 
-#: A second request while one is running is refused rather than queued. Queueing
+#: A second request while one is running used to be refused rather than queued.
+#: That has changed --- see `synth_queue` --- but the reasoning is why the queue
+#: is capped rather than unbounded. Queueing
 #: is what made this dangerous: synthesis is slow enough (RTF ~3.4 for Indic) to
 #: look hung, so the natural response is to click again, and every extra click
 #: made the machine slower rather than the answer sooner. Refusing turns that
@@ -106,6 +112,34 @@ BUSY_MESSAGE = (
 #: has been going. "Busy" with no number is indistinguishable from "stuck", which
 #: is the confusion that caused the retrying in the first place.
 _synth_started_at: float | None = None
+
+#: The line for the one machine. See `web.queue`: concurrency stays 1 and the
+#: queue is hard-capped, so this changes *how* an overloaded server says no,
+#: not whether it does.
+synth_queue = SynthesisQueue()
+
+#: Usage accounting. Opened once at import so a failure to create the database
+#: is a startup error rather than a surprise on the first paid request.
+meter = Meter()
+
+#: Until accounts exist, everything bills to one tenant. Named rather than
+#: blank so the rows written today are still readable once real accounts land,
+#: and so `totals()` has something to key on from the first request.
+DEFAULT_ACCOUNT = "local"
+
+
+def _meter_quietly(usage: Usage) -> None:
+    """Record usage without ever failing the request that produced it.
+
+    Losing a metering row is bad. Failing a generation the customer already
+    waited for, because the accounting could not be written, is worse --- and a
+    full disk would otherwise turn a working product into a broken one at
+    exactly the moment there is most to lose.
+    """
+    try:
+        meter.record(usage)
+    except Exception:  # noqa: BLE001
+        pass
 
 #: Backstop against a pathological paste, NOT a quality-of-service limit.
 #:
@@ -294,6 +328,33 @@ async def config() -> dict:
     }
 
 
+@app.get("/api/queue")
+async def queue_state() -> dict:
+    """How busy the one machine is.
+
+    Polled by the studio while a generation is in flight, so a waiting person
+    sees a position instead of a spinner. That is the whole reason queueing is
+    safe here: someone who can see "2 ahead of you" does not click again, and
+    clicking again was what turned a slow request into a stuck machine.
+
+    Deliberately carries no identities --- only shape --- so it can be served to
+    an unauthenticated page without leaking who else is generating.
+    """
+    return synth_queue.snapshot()
+
+
+@app.get("/api/usage")
+async def usage(account: str = DEFAULT_ACCOUNT, since: str | None = None) -> dict:
+    """What an account has used. `since` is an ISO timestamp.
+
+    Billable characters count successful generations only; failures and
+    rejections are reported beside them rather than folded in, because a
+    customer disputing an invoice is owed the difference between "you generated
+    this" and "this machine was busy for you".
+    """
+    return meter.totals(account, since=since)
+
+
 # --- profiles -------------------------------------------------------------
 
 
@@ -476,6 +537,7 @@ async def speak(
     text: str = Form(...),
     profile_id: str = Form(...),
     format: str = Form("wav"),
+    account: str = Form(DEFAULT_ACCOUNT),
 ) -> Response:
     # Declared up front: this function both reads it (in the busy check) and
     # writes it (when synthesis starts), and Python requires the declaration
@@ -501,24 +563,29 @@ async def speak(
             "while and produce nothing until it finished. Split it into sections.",
         )
 
-    # Refuse rather than queue -- see BUSY_MESSAGE. Checking `locked()` before
-    # acquiring is deliberate: it makes a concurrent request fail immediately
-    # instead of blocking, which is the whole point.
-    if _synth_lock.locked():
-        elapsed = ""
-        if _synth_started_at is not None:
-            elapsed = f" It has been running {time.perf_counter() - _synth_started_at:.0f}s."
-        raise HTTPException(429, BUSY_MESSAGE + elapsed)
-
     # Route on script. Devanagari (and other Indic scripts) cannot be spoken by
     # Chatterbox at all, so this is a correctness decision, not a preference.
     detection = detect(text)
     spoken = text.strip()
     parts: list[np.ndarray] = []
     started = time.perf_counter()
+    billable = characters_of(text)
 
+    # Queue rather than refuse. This used to raise 429 the moment the lock was
+    # held, and that was right for a developer tool -- see BUSY_MESSAGE for the
+    # spiral it prevented. It is wrong for something someone paid for, which
+    # reads a 429 as broken. `web.queue` keeps the property that made refusing
+    # safe: the line is short, hard-capped, and every waiter is told its
+    # position. Past capacity the honest answer is still no.
+    #
+    # `QueueFull` can only come out of the `async with` header, never the body,
+    # so catching it around the whole block cannot swallow a synthesis error.
+    ahead = 0
+    queued_seconds = 0.0
     try:
-        async with _synth_lock:
+        async with synth_queue.slot() as ticket:
+            ahead = ticket.ahead
+            queued_seconds = time.perf_counter() - started
             _synth_started_at = time.perf_counter()
             if detection.is_indic:
                 profile = store.get(profile_id)
@@ -587,11 +654,56 @@ async def speak(
         raise
     except ConsentError as exc:
         raise HTTPException(403, str(exc)) from exc
+    except QueueFull as exc:
+        # 503 with a wait, not 429. The line is full; the machine is fine.
+        _meter_quietly(
+            Usage(
+                account=account,
+                characters=billable,
+                status=REJECTED,
+                language=detection.language,
+                voice=profile_id,
+                detail="queue full",
+            )
+        )
+        raise HTTPException(
+            503, str(exc), headers={"Retry-After": str(max(1, int(exc.eta_seconds)))}
+        ) from exc
     except UnsupportedLanguage as exc:
         # 400, not 500: the request is the problem, and the message names the
         # language. Chatterbox Multilingual speaks Hindi and no other Indic
         # language; IndicF5 covered eleven. See tts/chatterbox_indic.py.
+        _meter_quietly(
+            Usage(
+                account=account,
+                characters=billable,
+                status=FAILED,
+                language=detection.language,
+                voice=profile_id,
+                queued_seconds=queued_seconds,
+                detail="unsupported language",
+            )
+        )
         raise HTTPException(400, str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        # Recorded before re-raising. A generation that died still occupied the
+        # one machine for its duration, and usage that counts only successes
+        # under-reports load exactly when the system is unhealthy.
+        _meter_quietly(
+            Usage(
+                account=account,
+                characters=billable,
+                status=FAILED,
+                language=detection.language,
+                voice=profile_id,
+                queued_seconds=queued_seconds,
+                synthesis_seconds=time.perf_counter() - started,
+                detail=type(exc).__name__,
+            )
+        )
+        raise
     finally:
         # Cleared unconditionally: a stale timestamp would make the next busy
         # message report a nonsense duration.
@@ -610,6 +722,21 @@ async def speak(
 
     payload, media_type, ext = _encode(audio, SAMPLE_RATE, fmt)
 
+    # Recorded after the audio exists and before it is handed back, so a
+    # generation is billed if and only if the customer actually received it.
+    _meter_quietly(
+        Usage(
+            account=account,
+            characters=billable,
+            status=OK,
+            language=detection.language,
+            voice=profile_id,
+            audio_seconds=round(seconds, 3),
+            synthesis_seconds=round(elapsed_ms / 1000, 3),
+            queued_seconds=round(queued_seconds, 3),
+        )
+    )
+
     return Response(
         content=payload,
         media_type=media_type,
@@ -619,6 +746,12 @@ async def speak(
             "X-Realtime-Factor": f"{(elapsed_ms / 1000) / seconds:.2f}" if seconds else "0",
             "X-Audio-Format": ext,
             "X-Language": detection.language,
+            # What the caller waited behind, and what it will be charged. Both
+            # in headers so a client can show a queue notice and a running
+            # total without a second request.
+            "X-Queued-Seconds": f"{queued_seconds:.2f}",
+            "X-Queue-Ahead": str(ahead),
+            "X-Billable-Characters": str(billable),
             # Always "stock": Chatterbox clones zero-shot, so there is no
             # per-voice fine-tune to distinguish. Kept so the header contract
             # does not change under existing clients.
