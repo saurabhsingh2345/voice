@@ -89,25 +89,50 @@ def test_empty_text_is_refused():
 # --- 2. concurrency -------------------------------------------------------
 
 
-def test_a_second_request_is_refused_while_one_is_running():
-    """Refused, not queued. Queueing is what let clicks pile up and made the
-    machine slower rather than the answer sooner."""
-    async def hold():
-        async with srv._synth_lock:
+def test_a_request_past_capacity_is_refused_with_a_wait():
+    """Queued now, not refused outright --- but still capped.
+
+    The old behaviour was a flat 429 the moment anything was running, which is
+    right for a developer tool and reads as broken to someone who paid. What had
+    to survive the change is the cap: an unbounded line on a machine that serves
+    one at a time is a lie with a spinner on it.
+    """
+    async def fill_the_queue():
+        held = []
+        for _ in range(srv.synth_queue._max_waiting + 1):
+            slot = srv.synth_queue.slot()
+            await slot.__aenter__()
+            held.append(slot)
+            break  # one running is enough; the rest are counted as waiting
+        srv.synth_queue._waiting = srv.synth_queue._max_waiting
+        try:
             return client.post(
                 "/api/speak", data={"text": "नमस्ते।", "profile_id": "any"}
             )
+        finally:
+            srv.synth_queue._waiting = 0
+            for slot in held:
+                await slot.__aexit__(None, None, None)
 
-    r = asyncio.run(hold())
-    assert r.status_code == 429
-    assert "at a time" in r.json()["detail"].lower()
+    r = asyncio.run(fill_the_queue())
+    assert r.status_code == 503
+    assert "retry-after" in {k.lower() for k in r.headers}
+    assert "waiting" in r.json()["detail"].lower()
 
 
-def test_the_lock_is_released_afterwards():
-    """A guard that leaks the lock would refuse every later request."""
-    assert not srv._synth_lock.locked()
+def test_the_queue_is_released_afterwards():
+    """A guard that leaks the slot would stall every later request."""
+    assert not srv.synth_queue.running
     client.post("/api/speak", data={"text": "नमस्ते।", "profile_id": "nope"})
-    assert not srv._synth_lock.locked()
+    assert not srv.synth_queue.running
+    assert srv.synth_queue.waiting == 0
+
+
+def test_the_queue_endpoint_reports_shape_without_identities():
+    """Served to an unauthenticated page, so it must not leak who is generating."""
+    body = client.get("/api/queue").json()
+    assert set(body) >= {"running", "waiting", "depth", "capacity", "accepting"}
+    assert not any("account" in k or "voice" in k for k in body)
 
 
 def test_format_is_validated_before_the_busy_check_wastes_a_slot():
@@ -154,16 +179,20 @@ def test_encode_rejects_undecodable_audio():
     assert r.status_code == 400
 
 
-def test_encode_does_not_take_the_synthesis_lock():
+def test_encode_does_not_wait_behind_the_synthesis_queue():
     """Encoding is milliseconds of CPU; making it wait behind a 40s synthesis
     would reintroduce the stall for no reason."""
     async def hold():
-        async with srv._synth_lock:
+        slot = srv.synth_queue.slot()
+        await slot.__aenter__()
+        try:
             return client.post(
                 "/api/encode",
                 files={"audio": ("a.wav", wav_bytes(), "audio/wav")},
                 data={"format": "flac"},
             )
+        finally:
+            await slot.__aexit__(None, None, None)
 
     assert asyncio.run(hold()).status_code == 200
 
