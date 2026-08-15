@@ -48,6 +48,16 @@
     font-size: .85rem; color: var(--dim);
   }
   code { background: #0d0f14; padding: .12rem .4rem; border-radius: 4px; color: var(--warn); }
+  /* Stale-process banner. Deliberately at the top of the page and in the error
+     colour: the failure it explains looks like a broken product, so it has to
+     be read before anything else on the page is believed. */
+  #stale {
+    display: none; border: 1px solid var(--err); border-left-width: 3px;
+    border-radius: 6px; padding: .8rem .9rem; margin-bottom: 1.4rem;
+    font-size: .85rem; color: var(--text); background: #1d1419;
+  }
+  #stale b { color: var(--err); }
+  #stale span { color: var(--dim); display: block; margin-top: .35rem; }
   .voice { display: flex; justify-content: space-between; align-items: center;
            padding: .55rem 0; border-bottom: 1px solid var(--line); font-size: .88rem; }
   .voice:last-child { border-bottom: none; }
@@ -59,6 +69,8 @@
 </head>
 <body>
 <main>
+  <div id="stale"></div>
+
   <h1>Local Voice Agent</h1>
   <p class="sub">Runs entirely on this Mac. No audio leaves the machine.</p>
 
@@ -259,7 +271,32 @@ async function loadConfig() {
   cfg = await (await fetch("/api/config")).json();
   $("phrase").textContent = cfg.consent_phrase;
   $("minmax").textContent = `${cfg.min_seconds}–${cfg.max_seconds}s`;
+  renderStale(cfg);
 }
+
+// The server compares the code it imported against the tree on disk. When they
+// differ, synthesis can fail in ways that look like a broken model rather than a
+// stale process -- so say it here, before the user spends an hour on it.
+function renderStale(c) {
+  const el = $("stale");
+  if (!c || !c.stale) { el.style.display = "none"; return; }
+  el.innerHTML = "";
+  const head = document.createElement("b");
+  head.textContent = "This server is out of date — restart it.";
+  const body = document.createElement("span");
+  // textContent, not innerHTML: the message carries a filename from disk.
+  body.textContent = c.stale;
+  const how = document.createElement("span");
+  how.textContent = "Stop it with Ctrl-C and run  uv run voice-web  again.";
+  el.append(head, body, how);
+  el.style.display = "block";
+}
+
+// Re-checked rather than read once, for two reasons: the page is usually opened
+// long before the code changes underneath it, and after the restart that fixes
+// it the banner clears itself without anyone reloading. A failed fetch is the
+// server being restarted -- exactly what was asked for -- so it is ignored.
+setInterval(() => { loadConfig().catch(() => {}); }, 10000);
 
 // --- recording -----------------------------------------------------------
 $("rec").onclick = async () => {

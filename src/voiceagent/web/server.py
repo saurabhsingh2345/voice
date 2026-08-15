@@ -23,6 +23,7 @@ import soundfile as sf
 from fastapi import FastAPI, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
+from voiceagent import version
 from voiceagent.text.detect import detect
 from voiceagent.text.normalize_hi import normalize as normalize_hi
 from voiceagent.tts.chatterbox_indic import (
@@ -56,6 +57,13 @@ from voiceagent.voice_clone.store import (
 app = FastAPI(title="Local Voice Agent")
 store = VoiceProfileStore()
 engine = ChatterboxCloneEngine(store=store)
+
+#: Captured at import, which is the instant Python binds every module this
+#: process will ever run. `/api/config` compares it against the tree on each
+#: poll so a server left running across a code change says so instead of failing
+#: obscurely --- see voiceagent.version for why this is an mtime check and not a
+#: SHA one.
+SOURCE_AT_START = version.snapshot()
 
 #: Training clips, stored inside each profile directory so the existing deletion
 #: paths reach them. See voice_clone.dataset.
@@ -271,12 +279,18 @@ async def index() -> str:
 
 @app.get("/api/config")
 async def config() -> dict:
+    # `with_git=False` keeps this endpoint free of subprocesses: the mtime scan
+    # alone decides staleness, and `drift()` pays for git only once it has
+    # something to report.
+    stale = version.drift(SOURCE_AT_START, version.snapshot(with_git=False))
     return {
         "consent_phrase": CONSENT_PHRASE,
         "min_seconds": MIN_REFERENCE_SECONDS,
         "max_seconds": MAX_REFERENCE_SECONDS,
         "model_loaded": _loaded,
         "formats": sorted(OUTPUT_FORMATS),
+        "source": SOURCE_AT_START.label(),
+        "stale": stale,
     }
 
 
@@ -1111,7 +1125,16 @@ def main() -> int:
     import uvicorn
 
     port = resolved_port()
-    print(f"\n  Local Voice Agent -> http://127.0.0.1:{port}\n")
+    banner = f"\n  Local Voice Agent -> http://127.0.0.1:{port}"
+    # Printed so that the answer to "what is this process actually running?" is
+    # in the scrollback of the terminal that started it, months later.
+    if SOURCE_AT_START.watchable:
+        banner += f"\n  source: {SOURCE_AT_START.label()}  (restart after any code change)"
+    # `flush` because stdout is block-buffered whenever it is not a terminal,
+    # and uvicorn then blocks forever without flushing. Redirect the server to a
+    # log --- which is how it gets left running for days, which is the situation
+    # this line exists for --- and without this the banner never appears at all.
+    print(banner + "\n", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
     return 0
 
