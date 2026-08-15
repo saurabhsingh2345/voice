@@ -103,6 +103,7 @@ arena = [
 voice-doctor = "voiceagent.diagnostics.doctor:main"
 voice-web = "voiceagent.web.server:main"
 voice-chat = "voiceagent.orchestration.loop:main"
+voice-keys = "voiceagent.web.keys:main"
 
 [build-system]
 requires = ["hatchling"]
