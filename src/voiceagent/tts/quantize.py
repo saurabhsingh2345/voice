@@ -47,11 +47,21 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from voiceagent import paths
 from voiceagent.tts.chatterbox_indic import CHATTERBOX_REPO
 
-#: Under `data/`, which is gitignored. A 900 MB artifact is a build output, not
-#: a source file, and it is reproducible from this script in seconds.
-DEFAULT_OUT = Path("data/models")
+#: Under the project's `data/`, which is gitignored. A 900 MB artifact is a
+#: build output, not a source file, and it is reproducible from this script in
+#: seconds.
+#:
+#: Resolved through `paths`, not as the bare relative `Path("data/models")` this
+#: used to be. That version was silently cwd-dependent: starting `voice-web`
+#: from any other directory rebuilt the whole 900 MB checkpoint *there* and used
+#: it, so the cache both missed and littered. It went unnoticed because
+#: everything still worked --- the only symptom was a second copy of the weights
+#: appearing wherever the server happened to be launched from, which is exactly
+#: the kind of bug `paths.py` was written to end.
+DEFAULT_OUT = paths.data_dir() / "models"
 
 #: 64 matches what mlx-lm uses by default and divides every Linear in this model
 #: that is eligible; a group size the weights do not divide silently skips layers.

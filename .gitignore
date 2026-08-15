@@ -34,3 +34,7 @@ desktop/src-tauri/target/
 
 # Built by desktop/build_runtime.sh -- 1.3 GB, reproducible in a few minutes.
 desktop/src-tauri/runtime/
+
+# Vercel CLI link + OIDC token (site/)
+.vercel/
+.env.local
