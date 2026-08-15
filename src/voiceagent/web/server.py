@@ -1055,6 +1055,92 @@ async def add_clip(
     }
 
 
+@app.post("/api/contribute")
+async def contribute(
+    request: Request,
+    profile_id: str = Form(...),
+    text: str = Form(...),
+    clip: UploadFile = Form(...),
+    language: str = Form("hi"),
+    synthetic_seconds: float = Form(0.0),
+) -> dict:
+    """A speaker reads back a line their own voice generated, and we keep it.
+
+    This is the flywheel: every accepted contribution is `(text, synthetic,
+    real)` for one speaker on one sentence, which is the corpus a fine-tune
+    wants and is normally expensive to buy. Consent rides along for free ---
+    the contributor is the speaker, and `dataset.add_clip` refuses any profile
+    that lacks a `ConsentRecord`.
+
+    **The recording is checked against the text before it is stored.** A clip
+    filed under the wrong sentence teaches the voice something false and nothing
+    downstream ever notices --- training loss falls exactly the same. Collected
+    from people reading off a screen, mismatches are not an edge case: a misread
+    word, a false start, a phone that captured a second of silence. See
+    `voice_clone.contribution` for why round-trip overlap is the right
+    instrument for this one question and the wrong one for ranking quality.
+
+    Nothing here promises the voice improves today. It does not: this builds a
+    dataset and a measurement, and training is a separate, later, GPU-bound
+    step. The UI must not imply otherwise.
+    """
+    from voiceagent.voice_clone.contribution import verify_recording
+
+    if is_public():
+        refusal = rate_limiter.check(client_ip(request), characters_of(text))
+        if refusal:
+            raise HTTPException(429, refusal)
+        rate_limiter.record(client_ip(request), characters_of(text))
+
+    if store.get(profile_id) is None:
+        raise HTTPException(403, "no such consented voice profile")
+
+    audio, sr, duration = _decode_upload(await clip.read())
+    wav = _to_wav_bytes(audio, sr)
+
+    # Written to a temporary file because the scorer reads a path -- Whisper
+    # wants a file, not an array, and reusing the project's one decode path
+    # beats a second in-memory variant that could drift from it.
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as handle:
+        handle.write(wav)
+        handle.flush()
+        verdict = verify_recording(
+            handle.name,
+            text,
+            language=language,
+            synthetic_seconds=synthetic_seconds or None,
+            recorded_seconds=duration,
+        )
+
+    if not verdict.accepted:
+        # 422, not 400: the request is well formed and the *content* is what
+        # fails, and the caller can fix it by reading the line again.
+        raise HTTPException(422, verdict.reason)
+
+    try:
+        saved = dataset.add_clip(profile_id, wav, text, duration, sr, language=language)
+    except ConsentError as exc:
+        raise HTTPException(403, str(exc)) from exc
+    except DatasetError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    summary = dataset.summary(profile_id)
+    return {
+        "clip_id": saved.clip_id,
+        "duration_seconds": round(saved.duration_seconds, 2),
+        "match": round(verdict.overlap, 3),
+        "duration_ratio": round(verdict.duration_ratio, 2) if verdict.duration_ratio else None,
+        "unusual_length": verdict.unusual_length,
+        "clip_count": summary.clip_count,
+        "total_seconds": round(summary.total_seconds, 1),
+        "target_seconds": summary.target_seconds,
+        "fraction_of_target": round(summary.fraction_of_target, 3),
+        "usable": summary.usable,
+    }
+
+
 @app.patch("/api/dataset/{profile_id}/clips/{clip_id}")
 async def edit_clip(profile_id: str, clip_id: str, text: str = Form(...)) -> dict:
     try:
