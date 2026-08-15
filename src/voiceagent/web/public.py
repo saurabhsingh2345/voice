@@ -51,6 +51,34 @@ PUBLIC_ROUTES: frozenset[tuple[str, str]] = frozenset(
     }
 )
 
+#: Reachable only with an invite code. These *write*: they enrol a voice and add
+#: training clips, so they consume disk and create records that carry a person's
+#: consent. That is fine for artists we invited and unacceptable from an open
+#: URL, and the difference cannot be expressed by rate limiting alone --- the
+#: risk is not volume, it is someone enrolling a voice that is not theirs.
+#:
+#: A shared code is weak authentication and is not pretending otherwise. It is
+#: proportionate to "a link sent to people we know", and it must be replaced by
+#: real accounts before enrolment is offered to strangers.
+ARTIST_ROUTES: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("POST", "/api/voices"),
+        ("POST", "/api/contribute"),
+        ("GET", "/api/prompts"),
+    }
+)
+
+#: Prefix-matched because the path carries a profile id. Read-only progress for
+#: the artist's own recording session.
+ARTIST_PREFIXES: tuple[tuple[str, str], ...] = (("GET", "/api/dataset/"),)
+
+ENV_INVITE = "VOICEAGENT_INVITE_CODE"
+
+#: The header the page sends. Also accepted as a form field, because a browser
+#: cannot attach headers to a plain form post and the enrolment page uploads
+#: audio as multipart.
+INVITE_HEADER = "x-invite"
+
 #: Generations per IP per hour. The machine serves one at a time and a tester
 #: exploring for ten minutes will not approach this; a script will hit it in
 #: seconds. Low enough to protect a single Mac, high enough not to interrupt
@@ -164,6 +192,17 @@ class RateLimiter:
         }
 
 
+def invite_code() -> str:
+    """The shared code, or empty when none is configured."""
+    return os.environ.get(ENV_INVITE, "").strip()
+
+
+def is_artist_route(method: str, path: str) -> bool:
+    if (method, path) in ARTIST_ROUTES:
+        return True
+    return any(method == m and path.startswith(p) for m, p in ARTIST_PREFIXES)
+
+
 class PublicSurface(BaseHTTPMiddleware):
     """Deny-by-default routing when `VOICEAGENT_PUBLIC` is set."""
 
@@ -176,7 +215,27 @@ class PublicSurface(BaseHTTPMiddleware):
         if request.method == "OPTIONS":
             return await call_next(request)
 
-        if (request.method, request.url.path) not in PUBLIC_ROUTES:
+        method, path = request.method, request.url.path
+
+        if is_artist_route(method, path):
+            expected = invite_code()
+            #: No code configured means the artist routes stay shut. Failing
+            #: closed matters more here than anywhere else on this surface:
+            #: an unset variable is the likeliest mistake, and the failure it
+            #: would cause is anonymous voice enrolment on a public URL.
+            if not expected:
+                return JSONResponse({"detail": "Not Found"}, status_code=404)
+
+            supplied = request.headers.get(INVITE_HEADER, "").strip()
+            if not supplied:
+                supplied = request.query_params.get("invite", "").strip()
+            if supplied != expected:
+                #: 404 here too. A 403 would confirm the route exists and turn
+                #: guessing the code into a bounded problem.
+                return JSONResponse({"detail": "Not Found"}, status_code=404)
+            return await call_next(request)
+
+        if (method, path) not in PUBLIC_ROUTES:
             return JSONResponse({"detail": "Not Found"}, status_code=404)
 
         return await call_next(request)

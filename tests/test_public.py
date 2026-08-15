@@ -149,3 +149,43 @@ def test_the_forwarded_address_is_preferred():
 
 def test_it_falls_back_to_the_socket_address():
     assert client_ip(_Req({}, host="198.51.100.7")) == "198.51.100.7"
+
+
+# --- the invited surface ---------------------------------------------------
+
+
+def test_artist_routes_write_and_are_therefore_separate():
+    """Enrolment and contribution consume disk and create consent records.
+    That is fine for people we invited and unacceptable from an open URL, and
+    the difference is not expressible as a rate limit."""
+    from voiceagent.web.public import ARTIST_ROUTES
+
+    assert ("POST", "/api/voices") in ARTIST_ROUTES
+    assert ("POST", "/api/contribute") in ARTIST_ROUTES
+    assert not (ARTIST_ROUTES & PUBLIC_ROUTES)
+
+
+def test_artist_routes_are_shut_when_no_code_is_configured(monkeypatch):
+    """An unset variable is the likeliest mistake, and the failure it would
+    cause is anonymous voice enrolment on a public URL. So it fails closed."""
+    from voiceagent.web.public import invite_code, is_artist_route
+
+    monkeypatch.delenv(public.ENV_INVITE, raising=False)
+    assert invite_code() == ""
+    assert is_artist_route("POST", "/api/voices")
+
+
+def test_dataset_progress_is_matched_by_prefix():
+    """The path carries a profile id, so exact matching would miss it and the
+    artist would see their own progress 404."""
+    from voiceagent.web.public import is_artist_route
+
+    assert is_artist_route("GET", "/api/dataset/abc123")
+    assert not is_artist_route("DELETE", "/api/dataset/abc123")
+
+
+def test_a_destructive_dataset_route_is_still_not_reachable():
+    from voiceagent.web.public import ARTIST_ROUTES, is_artist_route
+
+    assert not is_artist_route("DELETE", "/api/dataset/abc/clips/x")
+    assert not any(m == "DELETE" for m, _ in ARTIST_ROUTES)

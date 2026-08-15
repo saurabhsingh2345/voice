@@ -1,0 +1,336 @@
+<meta charset="utf-8">
+<title>Swar for Voice Artists</title>
+<style>
+  :root {
+    --ink:#0C1614; --panel:#112120; --panel-2:#162B28; --line:#22403B;
+    --text:#E9F1ED; --dim:#8CA79F; --brass:#D8A94B; --brass-dim:#8A6E2F;
+    --live:#E5533D; --ok:#7FB069; --radius:3px;
+    --dev:"Kohinoor Devanagari","Devanagari Sangam MN","Noto Sans Devanagari",sans-serif;
+    --ui:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,monospace;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--ink); color:var(--text); font-family:var(--ui);
+         line-height:1.55; -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:760px; margin:0 auto; padding:0 1.5rem; }
+  a { color:var(--brass); }
+  .eyebrow { font-family:var(--mono); font-size:.7rem; letter-spacing:.16em;
+             text-transform:uppercase; color:var(--brass-dim); }
+  nav { display:flex; align-items:center; justify-content:space-between;
+        padding:1.4rem 0; border-bottom:1px solid var(--line); }
+  .mark { display:flex; align-items:baseline; gap:.55rem; text-decoration:none; color:inherit; }
+  .mark .dev { font-family:var(--dev); font-size:1.5rem; color:var(--brass); line-height:1; }
+  .mark .lat { font-size:1.05rem; font-weight:600; }
+
+  main { padding:2.4rem 0 5rem; }
+  h1 { font-size:1.6rem; letter-spacing:-.02em; margin:.6rem 0 0; font-weight:650; }
+  h2 { font-size:1.15rem; letter-spacing:-.01em; margin:0; font-weight:600; }
+  .lede { color:var(--dim); margin:.7rem 0 0; max-width:54ch; }
+
+  /* Steps are numbered because this genuinely is a sequence: there is nothing
+     to record against until a voice exists. */
+  .step { border:1px solid var(--line); border-radius:var(--radius);
+          background:var(--panel); padding:1.5rem; margin-top:1.2rem; }
+  .step[aria-disabled="true"] { opacity:.45; pointer-events:none; }
+  .step .num { font-family:var(--mono); font-size:.7rem; letter-spacing:.14em;
+               color:var(--brass-dim); text-transform:uppercase; }
+
+  label { display:block; margin:1.4rem 0 .5rem; font-size:.88rem; color:var(--dim); }
+  input, select { width:100%; font:inherit; color:var(--text); background:var(--panel-2);
+                  border:1px solid var(--line); border-radius:var(--radius); padding:.75rem .9rem; }
+  input:focus, select:focus { outline:none; border-color:var(--brass-dim); }
+  :focus-visible { outline:2px solid var(--brass); outline-offset:2px; }
+
+  .consent { border-left:3px solid var(--brass); padding:.2rem 0 .2rem 1rem;
+             margin:1.2rem 0 0; font-size:.88rem; color:var(--dim); }
+  .consent b { color:var(--text); }
+  code { background:#0d0f14; padding:.12rem .45rem; border-radius:4px; color:var(--brass); }
+
+  .row { display:flex; flex-wrap:wrap; gap:.7rem; align-items:center; margin-top:1.4rem; }
+  button { font:inherit; font-size:.92rem; cursor:pointer; border-radius:var(--radius);
+           padding:.75rem 1.4rem; border:1px solid var(--brass);
+           background:var(--brass); color:#14100A; font-weight:600; }
+  button:hover:not(:disabled) { background:#E7BC5F; }
+  button:disabled { opacity:.45; cursor:default; }
+  button.ghost { background:var(--panel-2); border-color:var(--line); color:var(--text); font-weight:400; }
+  button.rec { background:var(--live); border-color:var(--live); color:#fff; }
+  button.rec:hover:not(:disabled) { background:#EE6952; }
+
+  .meter { height:4px; background:var(--panel-2); border-radius:2px; overflow:hidden; margin-top:1rem; }
+  .meter > i { display:block; height:100%; width:0; background:var(--ok); transition:width .08s; }
+
+  .status { margin-top:1rem; font-size:.88rem; min-height:1.3em; color:var(--dim); }
+  .status.err { color:var(--live); }
+  .status.ok { color:var(--ok); }
+  .status.work { color:var(--brass); }
+
+  /* The line to read, set large in Devanagari — this is what the artist is
+     looking at while speaking, so it gets the room. */
+  .line { font-family:var(--dev); font-size:1.5rem; line-height:1.45;
+          margin:1.2rem 0 0; padding:1.2rem; background:var(--panel-2);
+          border-radius:var(--radius); border:1px solid var(--line); }
+
+  .progress { font-family:var(--mono); font-size:.72rem; letter-spacing:.06em;
+              color:var(--dim); margin-top:1rem; display:flex; gap:1.2rem; flex-wrap:wrap; }
+
+  .note { border-left:2px solid var(--brass-dim); padding:.1rem 0 .1rem 1.1rem;
+          margin-top:2.4rem; color:var(--dim); font-size:.85rem; max-width:60ch; }
+  .gate { border:1px solid var(--live); border-radius:var(--radius);
+          padding:1.2rem; margin-top:1.6rem; display:none; }
+  .gate.show { display:block; }
+</style>
+
+<div class="wrap">
+  <nav>
+    <a class="mark" href="/"><span class="dev">स्वर</span><span class="lat">Swar</span></a>
+    <span class="eyebrow">Voice artists</span>
+  </nav>
+</div>
+
+<main class="wrap">
+  <div class="eyebrow">Lend your voice</div>
+  <h1>Record once. Then help it get better.</h1>
+  <p class="lede">Enrol your voice from a short clip, then read lines aloud so
+    the model has real recordings to learn from. You can delete everything at
+    any time by asking us.</p>
+
+  <div class="gate" id="gate">
+    <b style="color:var(--live)">This page needs an invite link.</b>
+    <div style="color:var(--dim); margin-top:.4rem; font-size:.9rem">
+      Open the link you were sent — it carries a code. Without it, recording is
+      switched off.
+    </div>
+  </div>
+
+  <!-- 1 · enrol -->
+  <div class="step" id="step1">
+    <div class="num">Step 1</div>
+    <h2>Enrol your voice</h2>
+    <p class="lede">Five to sixty seconds, read naturally, <b>in Hindi</b>.
+      A quiet room matters more than a good microphone.</p>
+
+    <div class="consent">
+      <b>Consent.</b> This clip is used to synthesise speech in your voice. Only
+      enrol your own voice. Your recording is encrypted at rest, and you can
+      have it deleted at any time.
+    </div>
+
+    <label for="name">Your name</label>
+    <input id="name" placeholder="e.g. Priya" autocomplete="off">
+
+    <label for="consent">Type <code>I consent to cloning my voice</code></label>
+    <input id="consent" placeholder="Type the phrase exactly" autocomplete="off">
+
+    <label for="reftext">What you are about to say, in Devanagari</label>
+    <input id="reftext" placeholder="वही शब्द जो आप बोलेंगे" autocomplete="off">
+
+    <div class="row">
+      <button class="rec" id="rec1">● Record</button>
+      <button class="ghost" id="stop1" disabled>■ Stop</button>
+      <span class="eyebrow" id="clock1">0.0s</span>
+    </div>
+    <div class="meter"><i id="level1"></i></div>
+    <div class="row"><button id="enrol" disabled>Enrol this voice</button></div>
+    <div class="status" id="s1"></div>
+  </div>
+
+  <!-- 2 · contribute -->
+  <div class="step" id="step2" aria-disabled="true">
+    <div class="num">Step 2</div>
+    <h2>Read lines aloud</h2>
+    <p class="lede">Read each line exactly as written. If you stumble, just
+      record it again — we check the reading before keeping it.</p>
+
+    <div class="line" id="line">—</div>
+
+    <div class="row">
+      <button class="rec" id="rec2">● Record</button>
+      <button class="ghost" id="stop2" disabled>■ Stop</button>
+      <button class="ghost" id="skip">Skip this line</button>
+      <span class="eyebrow" id="clock2">0.0s</span>
+    </div>
+    <div class="meter"><i id="level2"></i></div>
+    <div class="status" id="s2"></div>
+    <div class="progress" id="prog"></div>
+  </div>
+
+  <div class="note">
+    Recording here builds a dataset — it does not retrain your voice today.
+    Training is a separate step we run later on rented compute, so expect the
+    benefit in months, not on the next line. We would rather say that than let
+    the page imply otherwise.
+  </div>
+</main>
+
+<script src="/config.js"></script>
+<script>
+  const API = window.SWAR_API;
+  const $ = (id) => document.getElementById(id);
+  const INVITE = new URLSearchParams(location.search).get("invite") || "";
+
+  // Without a code the artist routes answer 404, so say that here rather than
+  // letting every action fail with an unexplained "not found".
+  if (!INVITE) {
+    $("gate").classList.add("show");
+    $("step1").setAttribute("aria-disabled", "true");
+  }
+
+  const say = (el, msg, kind = "") => { $(el).textContent = msg; $(el).className = "status " + kind; };
+
+  // --- recording ----------------------------------------------------------
+  function recorder(recBtn, stopBtn, levelEl, clockEl, maxSeconds, onDone) {
+    let media, chunks = [], started = 0, raf = null;
+
+    $(recBtn).onclick = async () => {
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch {
+        return say(recBtn === "rec1" ? "s1" : "s2", "Microphone permission denied.", "err");
+      }
+      chunks = [];
+      media = new MediaRecorder(stream);
+      media.ondataavailable = (e) => chunks.push(e.data);
+      media.onstop = () => {
+        stream.getTracks().forEach((t) => t.stop());
+        cancelAnimationFrame(raf);
+        $(levelEl).style.width = "0%";
+        onDone(new Blob(chunks, { type: media.mimeType }), (Date.now() - started) / 1000);
+      };
+      media.start();
+      started = Date.now();
+      $(recBtn).disabled = true;
+      $(stopBtn).disabled = false;
+
+      // A live level meter, so it is obvious the microphone is actually working
+      // before someone reads a whole sentence into a muted input.
+      const ctx = new AudioContext();
+      const analyser = ctx.createAnalyser();
+      ctx.createMediaStreamSource(stream).connect(analyser);
+      const buf = new Uint8Array(analyser.frequencyBinCount);
+      const tick = () => {
+        if (media.state !== "recording") return;
+        analyser.getByteTimeDomainData(buf);
+        let peak = 0;
+        for (const v of buf) peak = Math.max(peak, Math.abs(v - 128));
+        $(levelEl).style.width = Math.min(100, (peak / 128) * 180) + "%";
+        const secs = (Date.now() - started) / 1000;
+        $(clockEl).textContent = secs.toFixed(1) + "s";
+        if (secs >= maxSeconds) $(stopBtn).click();
+        raf = requestAnimationFrame(tick);
+      };
+      tick();
+    };
+
+    $(stopBtn).onclick = () => {
+      if (media && media.state === "recording") media.stop();
+      $(recBtn).disabled = false;
+      $(stopBtn).disabled = true;
+    };
+  }
+
+  // --- step 1: enrol ------------------------------------------------------
+  let enrolBlob = null;
+  recorder("rec1", "stop1", "level1", "clock1", 60, (blob, secs) => {
+    enrolBlob = blob;
+    say("s1", `Recorded ${secs.toFixed(1)}s. Check the details, then enrol.`, "ok");
+    checkEnrol();
+  });
+
+  const checkEnrol = () => {
+    const ok =
+      !!INVITE && !!enrolBlob &&
+      $("name").value.trim() &&
+      $("reftext").value.trim() &&
+      $("consent").value.trim().toLowerCase() === "i consent to cloning my voice";
+    $("enrol").disabled = !ok;
+  };
+  ["name", "consent", "reftext"].forEach((id) => ($(id).oninput = checkEnrol));
+
+  let profileId = null;
+
+  $("enrol").onclick = async () => {
+    $("enrol").disabled = true;
+    say("s1", "Enrolling…", "work");
+    const body = new FormData();
+    body.append("speaker_name", $("name").value.trim());
+    body.append("consent_phrase", $("consent").value.trim());
+    body.append("reference_text", $("reftext").value.trim());
+    body.append("audio", enrolBlob, "reference.webm");
+    try {
+      const res = await fetch(`${API}/api/voices?invite=${encodeURIComponent(INVITE)}`,
+                             { method: "POST", body, headers: { "X-Invite": INVITE } });
+      if (!res.ok) throw new Error((await res.json()).detail || `HTTP ${res.status}`);
+      const profile = await res.json();
+      profileId = profile.profile_id;
+      say("s1", `Enrolled as “${profile.speaker_name}”. Now read some lines.`, "ok");
+      $("step2").setAttribute("aria-disabled", "false");
+      loadPrompts();
+    } catch (e) {
+      say("s1", e.message, "err");
+      $("enrol").disabled = false;
+    }
+  };
+
+  // --- step 2: contribute -------------------------------------------------
+  let prompts = [], index = 0;
+
+  async function loadPrompts() {
+    try {
+      const res = await fetch(`${API}/api/prompts?invite=${encodeURIComponent(INVITE)}`,
+                              { headers: { "X-Invite": INVITE } });
+      const data = await res.json();
+      prompts = (Array.isArray(data) ? data : data.prompts || [])
+        .map((p) => (typeof p === "string" ? p : p.text))
+        .filter(Boolean);
+    } catch {
+      prompts = [];
+    }
+    // No local fallback list, deliberately. The obvious sentences to hardcode
+    // here are the ones already on the landing page -- and those are the
+    // *held-out* benchmark set. Recording them into the training data is
+    // exactly the leak `tests/test_heldout.py` exists to catch: a test set that
+    // leaks into training measures memorisation and reports it as quality.
+    // `train/prompts.py` is the source that is provably disjoint from it, so if
+    // the server cannot supply prompts, this step stays shut rather than
+    // inventing its own.
+    if (!prompts.length) {
+      say("s2", "Could not load the reading list. Nothing to record against yet.", "err");
+      $("step2").setAttribute("aria-disabled", "true");
+      return;
+    }
+    index = 0;
+    showLine();
+  }
+
+  const showLine = () => { $("line").textContent = prompts[index % prompts.length]; };
+  $("skip").onclick = () => { index++; showLine(); say("s2", ""); };
+
+  recorder("rec2", "stop2", "level2", "clock2", 20, async (blob, secs) => {
+    say("s2", "Checking the reading…", "work");
+    const body = new FormData();
+    body.append("profile_id", profileId);
+    body.append("text", prompts[index % prompts.length]);
+    body.append("language", "hi");
+    body.append("clip", blob, "take.webm");
+    try {
+      const res = await fetch(`${API}/api/contribute?invite=${encodeURIComponent(INVITE)}`,
+                              { method: "POST", body, headers: { "X-Invite": INVITE } });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+      say("s2", `Kept — matched the line ${Math.round(data.match * 100)}%.`, "ok");
+      $("prog").innerHTML = [
+        `${data.clip_count} clips`,
+        `${data.total_seconds}s recorded`,
+        `${Math.round(data.fraction_of_target * 100)}% of target`,
+        data.unusual_length ? "unusual length" : "",
+      ].filter(Boolean).map((s) => `<span>${s}</span>`).join("");
+      index++;
+      showLine();
+    } catch (e) {
+      // The server quotes back what it actually heard, which is the only way
+      // someone re-records a misread instead of repeating it.
+      say("s2", e.message, "err");
+    }
+  });
+</script>
