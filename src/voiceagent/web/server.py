@@ -314,9 +314,32 @@ def _to_wav_bytes(audio: np.ndarray, sample_rate: int) -> bytes:
 OUTPUT_FORMATS: dict[str, tuple[str, str, str, str]] = {
     # key: (libsndfile format, subtype, media type, extension)
     "wav": ("WAV", "PCM_16", "audio/wav", "wav"),
+    "mp3": ("MP3", "MPEG_LAYER_III", "audio/mpeg", "mp3"),
     "opus": ("OGG", "OPUS", "audio/ogg", "opus"),
     "flac": ("FLAC", "PCM_16", "audio/flac", "flac"),
 }
+
+#: MP3 is what people expect to receive, and it is ~25x smaller than the WAV ---
+#: which matters over a home tunnel far more than it does in a datacentre.
+#:
+#: **The licence position, stated rather than assumed.** No new dependency is
+#: added: `soundfile` is already here, declares BSD-3, and passes the audit,
+#: which reads Python package metadata. The `libsndfile` bundled inside that
+#: wheel is LGPL-2.1, and its MP3 *encoder* is LAME, also LGPL. So the audit's
+#: green does not by itself clear this, and this project's own rule --- a
+#: permissive model card is not a clean dependency tree --- says to look.
+#:
+#: Where that lands:
+#:   * **Hosted API and website:** LGPL imposes nothing. The library is used to
+#:     serve requests, not distributed.
+#:   * **Desktop `.app`:** the library *is* distributed, and LGPL then requires
+#:     that the user can replace it. libsndfile ships as a separate shared
+#:     object inside the wheel, so relinking is possible and the obligation is
+#:     satisfiable --- but it must be honoured in the bundle, not assumed.
+#:
+#: Only Layer III encodes; libsndfile advertises Layers I and II and raises
+#: "unimplemented format" on both, so they are deliberately not offered.
+MP3_NOTE = "libsndfile/LAME, LGPL-2.1 — see comment above before shipping in the bundle"
 
 
 def _encode(audio: np.ndarray, sample_rate: int, fmt: str) -> tuple[bytes, str, str]:

@@ -317,3 +317,49 @@ def test_the_response_still_declares_which_engine_answered():
     source = inspect.getsource(srv.speak)
     assert '"X-Weights"' in source
     assert "chatterbox-multilingual" in source and "chatterbox-turbo" in source
+
+
+# --- 6. output formats ----------------------------------------------------
+
+
+def test_mp3_is_offered():
+    """What people expect to receive, and ~25x smaller than the WAV -- which
+    matters over a home tunnel far more than it does in a datacentre."""
+    assert "mp3" in srv.OUTPUT_FORMATS
+    assert srv.OUTPUT_FORMATS["mp3"][2] == "audio/mpeg"
+
+
+def test_only_the_mp3_layer_that_actually_encodes_is_offered():
+    """libsndfile advertises Layers I and II and raises 'unimplemented format'
+    on both. Offering them would be a 500 waiting for whoever tried."""
+    assert srv.OUTPUT_FORMATS["mp3"][1] == "MPEG_LAYER_III"
+
+
+def test_every_declared_format_can_actually_be_written():
+    """The registry is the contract /api/config publishes, so a format listed
+    there and unwritable is a promise broken at the last step of a request the
+    caller already waited for."""
+    import numpy as np
+
+    audio = (0.1 * np.sin(np.arange(24_000) * 0.05)).astype("float32")
+    for name in srv.OUTPUT_FORMATS:
+        payload, media_type, ext = srv._encode(audio, 24_000, name)
+        assert payload, f"{name} produced no bytes"
+        assert media_type.startswith("audio/")
+
+
+def test_mp3_is_much_smaller_than_wav():
+    import numpy as np
+
+    audio = (0.1 * np.sin(np.arange(24_000 * 2) * 0.05)).astype("float32")
+    mp3, _, _ = srv._encode(audio, 24_000, "mp3")
+    wav, _, _ = srv._encode(audio, 24_000, "wav")
+    assert len(mp3) < len(wav) / 5
+
+
+def test_an_unknown_format_is_refused_before_synthesis():
+    """Rejecting after a 30s generation wastes all of it."""
+    r = client.post(
+        "/api/speak", data={"text": "नमस्ते।", "profile_id": "x", "format": "aiff"}
+    )
+    assert r.status_code == 400

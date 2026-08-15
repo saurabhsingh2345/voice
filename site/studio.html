@@ -135,7 +135,10 @@
 
   <div class="out" id="out">
     <audio id="player" controls></audio>
-    <button class="ghost" id="download">Download WAV</button>
+    <div class="row" style="margin-top:0">
+      <button class="ghost" id="download">Download MP3</button>
+      <button class="ghost" id="downloadWav">WAV</button>
+    </div>
     <div class="stats" id="stats"></div>
   </div>
 
@@ -254,7 +257,7 @@
     const body = new FormData();
     body.append("text", text);
     body.append("profile_id", $("voice").value);
-    body.append("format", "wav");
+    body.append("format", "mp3");
 
     try {
       const res = await fetch(`${API}/api/speak`, { method: "POST", body });
@@ -300,12 +303,32 @@
     }
   };
 
-  $("download").onclick = () => {
-    if (!blobUrl) return;
+  const save = (url, name) => {
     const a = document.createElement("a");
-    a.href = blobUrl;
-    a.download = "swar.wav";
-    a.click();
+    a.href = url; a.download = name; a.click();
+  };
+
+  $("download").onclick = () => { if (blobUrl) save(blobUrl, "swar.mp3"); };
+
+  // Re-requested rather than converted in the page: the browser cannot turn an
+  // MP3 back into the original samples, and offering a "WAV" that is really a
+  // re-wrapped lossy file would be a quiet lie to whoever edits it next.
+  $("downloadWav").onclick = async () => {
+    const text = $("text").value.trim();
+    if (!text || busy) return;
+    setStatus("Preparing WAV…", "work");
+    const body = new FormData();
+    body.append("text", text);
+    body.append("profile_id", $("voice").value);
+    body.append("format", "wav");
+    try {
+      const res = await fetch(`${API}/api/speak`, { method: "POST", body });
+      if (!res.ok) throw new Error((await res.json()).detail || "WAV failed");
+      const url = URL.createObjectURL(await res.blob());
+      save(url, "swar.wav");
+      URL.revokeObjectURL(url);
+      setStatus("Done.", "");
+    } catch (e) { setStatus(e.message, "err"); }
   };
 
   loadVoices();
