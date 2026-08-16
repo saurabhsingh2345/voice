@@ -115,20 +115,95 @@ MARATHI_MARKER = "ळ"
 #: shared vocabulary will not be caught. It is deliberately biased to precision:
 #: a miss reads as Hindi and synthesizes as it does today, which is the current
 #: behaviour and no worse.
-NEPALI_MARKERS = frozenset({"तपाईं", "एउटा", "मैले", "हिजो", "भोलि", "छन्", "गर्न", "हुन्छ"})
+#:
+#: MATCHED AS WHOLE WORDS, NOT SUBSTRINGS, and that is not a detail. Substring
+#: matching flagged the ordinary Hindi sentence "छन्द में लिखी कविता सुंदर थी।"
+#: because `छन्` sits inside छन्द (*chhand*, verse), and "यह गर्नल साहब का आदेश
+#: है।" because `गर्न` sits inside गर्नल (colonel). As an advisory header those
+#: were noise; as a refusal they would block correct Hindi, which is why this was
+#: fixed at the same time the Marathi case was hardened.
+#: Matched as a **word prefix**, because Nepali agglutinates: तपाईं takes a
+#: postposition and becomes तपाईंलाई, and whole-word matching misses every
+#: inflected form. Each of these was checked not to be the opening of an
+#: ordinary Hindi word.
+NEPALI_MARKERS = frozenset({"तपाईं", "एउटा", "मैले", "हिजो", "भोलि", "हुन्छ"})
+
+#: Matched only as **whole words**, because each is the opening of a real Hindi
+#: word and prefix-matching them would flag correct Hindi:
+#:
+#:     छन्  ->  छन्द   (*chhand*, verse)
+#:     गर्न ->  गर्नल  (colonel)
+#:
+#: They stay in the list because as complete words they are good Nepali signals;
+#: they are separated because the matching rule that suits the others is unsafe
+#: for them. Recall for their inflected forms is given up deliberately --- a miss
+#: is today's behaviour, a false positive is a blocked request.
+NEPALI_EXACT = frozenset({"छन्", "गर्न"})
 
 
-def devanagari_language_note(text: str) -> str | None:
-    """Warn when Devanagari text is a language we render badly.
+#: Severities. `REFUSE` means the request should not be served at all; `WARN`
+#: means serve it and say so.
+#:
+#: The two are set by how strong the evidence is, and it differs sharply between
+#: the languages (`eval_out/devanagari/FINDINGS.md`):
+#:
+#:   * **Marathi refuses.** `ळ` came back 0 of 4 seeds and the model substituted
+#:     Hindi words for Marathi ones on every one of them. That is not a
+#:     degradation, it is a language the engine cannot say, and the detector is a
+#:     single character that does not occur in standard Hindi.
+#:   * **Nepali warns.** `र्` conjuncts survived 2 of 4 seeds --- unreliable
+#:     rather than absent --- and the detector is a recall-limited word list
+#:     rather than a definitive marker. Refusing on a weaker signal *and* weaker
+#:     evidence would block text the engine handles acceptably.
+REFUSE = "refuse"
+WARN = "warn"
+
+
+@dataclass(frozen=True)
+class DevanagariNote:
+    language: str
+    severity: str
+    message: str
+
+    @property
+    def refuses(self) -> bool:
+        return self.severity == REFUSE
+
+
+def _words(text: str) -> set[str]:
+    """Devanagari word tokens, split on anything that is not a letter or mark.
+
+    Danda and double danda (`।` `॥`) are Devanagari punctuation and are not
+    letters, so the default split handles them; they are called out because a
+    naive `str.split()` on whitespace leaves "छ।" attached and the match silently
+    stops working at the end of every sentence.
+    """
+    out: set[str] = []
+    current: list[str] = []
+    for char in text:
+        if char.isalpha() or "ऀ" <= char <= "ॏ" and not char.isspace():
+            current.append(char)
+        else:
+            if current:
+                out.append("".join(current))
+                current = []
+    if current:
+        out.append("".join(current))
+    return set(out)
+
+
+def devanagari_language_note(text: str) -> DevanagariNote | None:
+    """Identify Devanagari text that is a language we render badly.
 
     `detect` maps every Devanagari string to `hi`, which is the right default and
-    is why Marathi and Nepali reach the Hindi engine today *without tripping any
-    guard*. They are not refused because they are not detected. This names that
-    case so a caller can decide what to do about it.
+    is why Marathi and Nepali reach the Hindi engine *without tripping any
+    guard*. They were not refused because they were not detected. This names the
+    case and says how strongly.
 
     Returns None for ordinary Hindi. Precision over recall throughout: a missed
-    Marathi sentence behaves exactly as it does now, while a false positive would
-    warn about correct Hindi, which is worse.
+    Marathi sentence behaves as it did before this existed, while a false
+    positive now blocks a paying customer's correct Hindi — which is exactly why
+    the Nepali markers are matched as whole words rather than substrings.
 
     See `eval_out/devanagari/FINDINGS.md`. The short version: Chatterbox reads
     both languages intelligibly (0.77 and 0.80 mean round-trip overlap, nothing
@@ -139,19 +214,33 @@ def devanagari_language_note(text: str) -> str | None:
         return None
 
     if MARATHI_MARKER in text:
-        return (
-            "This looks like Marathi. It will synthesize and be understandable, but "
-            f"the model does not produce {MARATHI_MARKER!r} — measured 0 of 4 seeds — "
-            "and substitutes Hindi words for Marathi ones where the two collide. "
-            "Chatterbox Multilingual carries one Indic language token and it is Hindi."
+        return DevanagariNote(
+            language="mr",
+            severity=REFUSE,
+            message=(
+                f"This is Marathi. The engine cannot produce {MARATHI_MARKER!r} — "
+                "measured 0 of 4 generations — and substitutes Hindi words for "
+                "Marathi ones where the two collide, so it would return audio that "
+                "is not Marathi rather than audio that is imperfect. Chatterbox "
+                "Multilingual carries one Indic language token and it is Hindi. "
+                "Marathi is roadmap, not configuration."
+            ),
         )
 
-    if any(marker in text for marker in NEPALI_MARKERS):
-        return (
-            "This looks like Nepali. It will synthesize and be understandable, but the "
-            "model is reading it with Hindi phonology; conjuncts such as 'र्' survive "
-            "only some generations. Chatterbox Multilingual carries one Indic language "
-            "token and it is Hindi."
+    words = _words(text)
+    looks_nepali = bool(NEPALI_EXACT & words) or any(
+        word.startswith(marker) for word in words for marker in NEPALI_MARKERS
+    )
+    if looks_nepali:
+        return DevanagariNote(
+            language="ne",
+            severity=WARN,
+            message=(
+                "This looks like Nepali. It will synthesize and be understandable, "
+                "but the model is reading it with Hindi phonology; conjuncts such "
+                "as 'र्' survive only some generations. Chatterbox Multilingual "
+                "carries one Indic language token and it is Hindi."
+            ),
         )
 
     return None

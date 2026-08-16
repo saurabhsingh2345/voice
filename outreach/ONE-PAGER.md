@@ -106,9 +106,10 @@ discoverable in week one.
   scores 90.2% on this scorer. Read every other number against that.
 - **Hindi and English only.** Other Indic *scripts* raise an error rather than
   guessing. More languages need a checkpoint that speaks them. Marathi and
-  Nepali are the exception worth naming: they share Hindi's script, so they
-  synthesize understandably but in Hindi phonology — Marathi's ळ is not produced
-  at all. The API warns; we do not sell either as supported.
+  Nepali are the exception worth naming: they share Hindi's script, so neither
+  is caught by script. **Marathi is refused** — the engine cannot produce ळ at
+  all — and **Nepali synthesizes with a warning header**, understandable but in
+  Hindi phonology. We sell neither as supported.
 - **Sub-second turn latency is not met** — 1.8 s warm.
 - **Models are not in the app bundle.** 1.3 GB app, ~7.6 GB of weights that
   download once. Offline after provisioning; pre-staged for air-gapped sites.

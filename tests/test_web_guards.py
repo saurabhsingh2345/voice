@@ -460,3 +460,36 @@ def test_an_unsigned_webhook_is_refused_even_when_configured(monkeypatch):
     )
     assert response.status_code == 401
     assert response.json()["detail"]["error"]["code"] == "invalid_signature"
+
+
+# --- Marathi is refused, Nepali is served with a warning ------------------
+
+
+def test_marathi_is_refused_before_the_machine_is_held():
+    """A 400 at validation altitude, not after a 30-second generation. Serving
+    it would bill a customer for a language the engine cannot speak: `ळ` came
+    back 0 of 4 generations and the model substituted Hindi words every time."""
+    client = TestClient(srv.app)
+    response = client.post(
+        "/api/speak",
+        data={"text": "सकाळी मी शाळेत लवकर पोहोचलो.", "profile_id": "whatever"},
+    )
+    assert response.status_code == 400
+    body = response.json()["detail"]["error"]
+    assert body["code"] == "unsupported_language"
+    assert body["language"] == "mr"
+
+
+def test_ordinary_hindi_is_not_refused():
+    """The guard must not have become a Devanagari ban. This gets past the
+    language check and fails later for an unrelated reason -- what matters is
+    that it is not a 400 naming an unsupported language."""
+    client = TestClient(srv.app)
+    response = client.post(
+        "/api/speak",
+        data={"text": "मैंने कल किताब पढ़ी।", "profile_id": "no-such-profile"},
+    )
+    if response.status_code == 400:
+        detail = response.json().get("detail")
+        code = detail.get("error", {}).get("code") if isinstance(detail, dict) else None
+        assert code != "unsupported_language"

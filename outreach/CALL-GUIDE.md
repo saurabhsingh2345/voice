@@ -140,16 +140,17 @@ disparage.
 > the part nobody else has."
 
 If they ask specifically about Marathi or Nepali — and a Maharashtra or Nepal
-deployment will — volunteer the whole answer, because this is the one place the
-error does not fire:
+deployment will — volunteer the whole answer, because these two do not fail the
+way the script check implies:
 
 > "Those two are a special case and I'd rather tell you than have you find out.
-> They're written in Hindi's script, so they don't hit the error — they
-> synthesize, and they're understandable. But the model is reading them with
-> Hindi phonology. Marathi's ळ doesn't come out at all; we measured it across
-> four generations and got it zero times, and the model substitutes Hindi words
-> where the two languages collide. The API returns a warning header. It will make
-> a sound. It is not a Marathi voice and I won't sell it to you as one."
+> They're written in Hindi's script, so they don't get caught the way Tamil does.
+> Marathi we now **refuse outright** — the model cannot produce ळ at all, we
+> measured it across four generations and got it zero times, and it substitutes
+> Hindi words where the two languages collide. Rather than sell you audio that
+> is confidently not Marathi, the API returns a 400. Nepali we do serve, with a
+> warning header: it comes out understandable, but in Hindi phonology. It will
+> make a sound. It is not a Nepali voice and I won't sell it to you as one."
 
 That answer costs a deal we would have lost anyway on the first native listen,
 and it buys the credibility that makes the Hindi numbers believable.

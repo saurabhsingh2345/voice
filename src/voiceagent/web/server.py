@@ -659,6 +659,22 @@ async def speak(
     if not text.strip():
         raise HTTPException(400, "text is required")
 
+    # Refused here, at the same altitude as the other cheap validations and long
+    # before the machine is held. Marathi is Devanagari, so it never reaches
+    # `UnsupportedLanguage` the way Tamil does — it is detected as Hindi and
+    # would synthesize into audio that is confidently not Marathi.
+    #
+    # This used to be a warning header. It is a 400 because the measurement is
+    # not marginal: `ळ` came back 0 of 4 generations and the model substituted
+    # Hindi words for Marathi ones every time (eval_out/devanagari/FINDINGS.md).
+    # Serving that bills a customer for a language we cannot speak, and the
+    # existing rule for Bengali applies unchanged — a named error beats a wrong
+    # voice. Nepali stays a warning: its evidence is weaker (`र्` survived 2 of
+    # 4) and so is its detector.
+    note = devanagari_language_note(text)
+    if note is not None and note.refuses:
+        raise ApiError(400, "unsupported_language", note.message, language=note.language)
+
     # Validate before synthesizing: encoding is the last step, and rejecting an
     # unknown format after a 30s generation wastes all of it.
     fmt = format.lower()
@@ -883,13 +899,12 @@ async def speak(
     # debit sits on this side of the try and the metering of failures does not.
     _debit_quietly(account, billable, note=f"{detection.language} {profile_id}")
 
-    # Marathi and Nepali are Devanagari, so they are detected as Hindi and never
-    # reach `UnsupportedLanguage` — they synthesize, understandably, in Hindi
-    # phonology, with Marathi's `ळ` dropped entirely. Refusing them would be
-    # wrong (the audio is usable and some callers want it); saying nothing would
-    # be worse. A header lets a client surface it without changing the contract.
-    # See eval_out/devanagari/FINDINGS.md.
-    language_warning = devanagari_language_note(text)
+    # Nepali is Devanagari, so it is detected as Hindi and never reaches
+    # `UnsupportedLanguage`. It synthesizes understandably in Hindi phonology,
+    # which is worth serving and worth saying out loud, so it rides on a header.
+    # Marathi is refused before synthesis instead — see `_refuse_unspeakable`.
+    note = devanagari_language_note(text)
+    language_warning = note.message if note else None
 
     return Response(
         content=payload,

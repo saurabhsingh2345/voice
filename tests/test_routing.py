@@ -148,7 +148,8 @@ def test_marathi_is_named_by_the_one_letter_hindi_does_not_have():
 
     note = devanagari_language_note("सकाळी मी शाळेत लवकर पोहोचलो.")
     assert note is not None
-    assert "Marathi" in note
+    assert note.language == "mr"
+    assert note.refuses, "0 of 4 seeds is not a degradation, it is a language we cannot say"
 
 
 def test_nepali_is_named_by_function_words():
@@ -156,7 +157,8 @@ def test_nepali_is_named_by_function_words():
 
     note = devanagari_language_note("तपाईंलाई कस्तो छ?")
     assert note is not None
-    assert "Nepali" in note
+    assert note.language == "ne"
+    assert not note.refuses, "weaker evidence and a weaker detector: warn, do not block"
 
 
 @pytest.mark.parametrize(
@@ -176,3 +178,40 @@ def test_ordinary_hindi_is_never_warned_about(text):
     from voiceagent.text.detect import devanagari_language_note
 
     assert devanagari_language_note(text) is None
+
+
+@pytest.mark.parametrize(
+    "text,why",
+    [
+        ("छन्द में लिखी कविता सुंदर थी।", "छन् is inside छन्द (chhand, verse)"),
+        ("यह गर्नल साहब का आदेश है।", "गर्न is inside गर्नल (colonel)"),
+    ],
+)
+def test_hindi_words_containing_a_nepali_marker_are_not_flagged(text, why):
+    """The regression that made hardening safe. Substring matching flagged both
+    of these as Nepali. As an advisory header that was noise; once Marathi became
+    a 400 the same class of error would block a paying customer's correct
+    Hindi, so the markers are matched as words."""
+    from voiceagent.text.detect import devanagari_language_note
+
+    assert devanagari_language_note(text) is None, why
+
+
+def test_nepali_is_still_caught_when_a_postposition_is_attached():
+    """The recall half. Nepali agglutinates -- तपाईं becomes तपाईंलाई -- so
+    whole-word matching alone would miss every inflected form. Markers safe as
+    prefixes are matched as prefixes; the two that open real Hindi words are
+    not."""
+    from voiceagent.text.detect import devanagari_language_note
+
+    assert devanagari_language_note("तपाईंलाई कस्तो छ?") is not None
+    assert devanagari_language_note("मैले हिजो एउटा किताब पढें।") is not None
+
+
+def test_the_danda_does_not_hide_a_marker():
+    """`।` is Devanagari punctuation, not a letter. A naive whitespace split
+    leaves "छ।" glued together and the match silently stops working at the end
+    of every sentence."""
+    from voiceagent.text.detect import _words
+
+    assert "गर्न" in _words("यो काम गर्न। धेरै")

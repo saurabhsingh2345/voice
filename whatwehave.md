@@ -88,11 +88,15 @@ Chatterbox rather than IndicF5 (Phase 12 — licence tree, and it measured bette
     Devanagari tokens and zero Bengali/Gujarati/Gurmukhi/Oriya/Tamil/Telugu/
     Kannada/Malayalam. A `[ta]` language token exists with no Tamil script behind
     it, which will mislead anyone who reads the vocab as a language list.
-  - **Marathi and Nepali are neither refused nor supported.** They share Hindi's
-    script, so `detect` calls them `hi` and they synthesize — intelligibly (0.77 /
-    0.80 round-trip) and in Hindi phonology. Marathi's `ळ` came back 0 of 4 seeds
-    and the model swaps in Hindi words (शाळेत → शायद). The API now returns an
-    `X-Language-Warning` header rather than guessing silently. Do not sell either.
+  - **Marathi is refused; Nepali is served with a warning.** Both share Hindi's
+    script, so `detect` calls them `hi` and neither is caught by script.
+    Marathi's `ळ` came back 0 of 4 seeds and the model swaps in Hindi words
+    (शाळेत → शायद), so `/api/speak` and `/v1/speech` answer
+    **`400 unsupported_language`** before synthesis — refusing beats billing for
+    audio that is confidently not Marathi. Nepali still synthesizes (0.80
+    round-trip, Hindi phonology) with an `X-Language-Warning` header, because its
+    evidence is weaker (`र्` survived 2 of 4) and so is its detector. Sell
+    neither as supported.
 - The live loop hears Hindi only with `--language hi` or `auto`; the default is
   English. Moonshine is English-only and does not *fail* on Hindi, it invents
   English — a real Hindi recording came back as "I have given a documentary for
