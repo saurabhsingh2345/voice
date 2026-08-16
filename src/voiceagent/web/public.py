@@ -78,6 +78,22 @@ ARTIST_PREFIXES: tuple[tuple[str, str], ...] = (("GET", "/api/dataset/"),)
 #: moment it is written, which is the opposite of the rule for `/api`: there,
 #: forgetting to add a route to the allowlist fails safe, and here, forgetting
 #: would only break a documented endpoint whose own auth is already mandatory.
+#:
+#: TWO ENDPOINTS UNDER THIS PREFIX DO NOT TAKE AN API KEY, and since the safety
+#: of a blanket prefix rests on the claim above, both are named here rather than
+#: left for someone to discover:
+#:
+#:   * ``GET /v1/plans`` — the pricing page as data, deliberately open. Someone
+#:     deciding whether to sign up should not need a key to see the price. It
+#:     reads nothing per-account and returns the same bytes to everyone.
+#:   * ``POST /v1/webhooks/razorpay`` — authenticated by **HMAC signature over
+#:     the raw body**, not by a key, because Razorpay has no key of ours to
+#:     send. It refuses outright when credentials are unset rather than
+#:     trusting an unverifiable payload, so an unconfigured server cannot have
+#:     its ledger written to by a stranger.
+#:
+#: Any further unauthenticated `/v1` route is a decision, not a detail. Add it
+#: to this list or give it auth.
 API_PREFIX = "/v1/"
 
 ENV_INVITE = "VOICEAGENT_INVITE_CODE"

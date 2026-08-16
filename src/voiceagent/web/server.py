@@ -26,6 +26,13 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from voiceagent import version
 from voiceagent.text.detect import detect, devanagari_language_note
+from voiceagent.web import razorpay
+from voiceagent.web.billing import (
+    OVERAGE_PAISE_PER_10K,
+    PLANS,
+    Billing,
+    InsufficientCredits,
+)
 from voiceagent.web.keys import ApiKey, KeyStore
 from voiceagent.web.metering import FAILED, OK, REJECTED, Meter, Usage, characters_of
 from voiceagent.web.public import (
@@ -166,6 +173,9 @@ meter = Meter()
 #: first authenticated call.
 key_store = KeyStore()
 
+#: Accounts, plans and the credit ledger. Same reasoning again.
+billing = Billing()
+
 #: Until accounts exist, everything bills to one tenant. Named rather than
 #: blank so the rows written today are still readable once real accounts land,
 #: and so `totals()` has something to key on from the first request.
@@ -182,6 +192,25 @@ def _meter_quietly(usage: Usage) -> None:
     """
     try:
         meter.record(usage)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _debit_quietly(account: str, characters: int, note: str = "") -> None:
+    """Spend credits without ever failing the request that spent them.
+
+    Same trade as `_meter_quietly` and the same reasoning, with one difference
+    worth being explicit about: a lost debit is revenue we do not collect, which
+    is a cost to us, while a failed request is a cost to the customer who already
+    waited. We take the former.
+
+    The asymmetry is bounded because the *check* happens before synthesis. An
+    account cannot run far past its allowance on lost debits: the next request
+    reads a balance that is only wrong by however many writes failed, and a
+    database sick enough to drop them is not going to serve many more requests.
+    """
+    try:
+        billing.debit(account, characters, note=note)
     except Exception:  # noqa: BLE001
         pass
 
@@ -847,6 +876,12 @@ async def speak(
             queued_seconds=round(queued_seconds, 3),
         )
     )
+
+    # Debited here and nowhere else: after the audio exists, in the same place
+    # the usage row is written. A failed generation is recorded as spent
+    # capacity (it held the machine) but is never charged, which is why the
+    # debit sits on this side of the try and the metering of failures does not.
+    _debit_quietly(account, billable, note=f"{detection.language} {profile_id}")
 
     # Marathi and Nepali are Devanagari, so they are detected as Hindi and never
     # reach `UnsupportedLanguage` — they synthesize, understandably, in Hindi
@@ -1583,6 +1618,158 @@ async def v1_usage(request: Request, since: str | None = None) -> dict:
     return meter.totals(key.account, since=since)
 
 
+@app.get("/v1/balance")
+async def v1_balance(request: Request) -> dict:
+    """Plan, credits left, and what that is worth in machine time.
+
+    `machine_seconds_remaining` is here because it is the honest unit. A million
+    characters sounds unlimited and is eleven hours of a machine that has
+    twenty-four, and a developer sizing a batch job should be able to see that
+    before starting it rather than from a queue notice afterwards.
+    """
+    key = _authenticate(request)
+    return billing.summary(key.account)
+
+
+@app.get("/v1/plans")
+async def v1_plans() -> dict:
+    """The pricing page, as data. Deliberately unauthenticated.
+
+    Someone deciding whether to sign up should not need a key to see the price,
+    and a client that wants to show an upgrade prompt should not have to hardcode
+    what we charge.
+    """
+    return {
+        "currency": "INR",
+        "plans": [
+            {
+                "name": plan.name,
+                "inr_per_month": plan.monthly_inr,
+                "characters_per_month": plan.monthly_characters,
+                "blocks_when_empty": plan.blocks_when_empty,
+                "note": plan.note,
+            }
+            for plan in PLANS.values()
+        ],
+        "overage_inr_per_10k_characters": OVERAGE_PAISE_PER_10K / 100,
+        # Stated rather than implied. A customer who can see that payments are
+        # not live yet will not spend an afternoon debugging their integration.
+        "payments_enabled": razorpay.configured(),
+    }
+
+
+@app.post("/v1/checkout")
+async def v1_checkout(request: Request) -> dict:
+    """Start a payment for a plan. Requires Razorpay credentials.
+
+    This is the boundary. Everything behind it — the ledger, the idempotent
+    credit, the signature checks — is written and tested; this call is the one
+    piece that cannot work until someone creates a Razorpay account and puts
+    three values in the environment. It says so rather than failing obscurely.
+    """
+    key = _authenticate(request)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        raise ApiError(400, "invalid_json", "The request body must be JSON.") from None
+
+    plan_name = (body.get("plan") or "").lower()
+    if plan_name not in PLANS:
+        raise ApiError(400, "unknown_plan", f"No plan named {plan_name!r}.",
+                       plans=sorted(PLANS))
+    plan = PLANS[plan_name]
+    if plan.monthly_paise <= 0:
+        raise ApiError(400, "plan_is_free",
+                       f"The {plan.name} plan costs nothing; there is nothing to pay.")
+
+    try:
+        order = razorpay.create_order(
+            amount_paise=plan.monthly_paise,
+            account=key.account,
+            plan=plan.name,
+            receipt=f"{key.account}:{plan.name}",
+        )
+    except razorpay.CredentialsMissing as exc:
+        raise ApiError(503, "payments_unavailable", str(exc)) from exc
+    except RuntimeError as exc:
+        raise ApiError(502, "payment_provider_error", str(exc)) from exc
+
+    return {
+        "order": order,
+        "key_id": razorpay.Credentials.from_env().key_id,
+        "amount_inr": plan.monthly_inr,
+        "plan": plan.name,
+    }
+
+
+@app.post("/v1/webhooks/razorpay")
+async def v1_razorpay_webhook(request: Request) -> dict:
+    """Credit an account when Razorpay says the money arrived.
+
+    Unauthenticated by design — Razorpay has no key of ours to send — so the
+    signature *is* the authentication, and it is checked against the raw body
+    before anything is parsed. Verifying after parsing, or against a
+    re-serialised dict, is the standard way this endpoint appears to work and
+    is in fact wide open.
+
+    Always returns 200 once the signature verifies, including for events we do
+    not act on. Razorpay retries anything else until it gives up, and a retry
+    storm caused by returning 400 for an event we simply ignore is self-inflicted.
+    """
+    credentials = razorpay.Credentials.from_env()
+    if credentials is None:
+        raise ApiError(
+            503, "payments_unavailable",
+            "Razorpay is not configured on this server, so webhooks cannot be "
+            "verified and are refused rather than trusted.",
+        )
+
+    raw = await request.body()
+    try:
+        razorpay.verify_webhook(
+            raw,
+            request.headers.get("x-razorpay-signature", ""),
+            credentials.webhook_secret,
+        )
+    except razorpay.SignatureInvalid as exc:
+        # No body, no signature, nothing from the payload in the log. An
+        # attacker probing this endpoint learns only that it refused.
+        raise ApiError(401, "invalid_signature", "Signature verification failed.") from exc
+
+    event = razorpay.parse_event(raw)
+    if not event.account:
+        return {"ok": True, "ignored": "no account in payment notes"}
+
+    if event.credits:
+        plan = PLANS.get(event.plan or "", None)
+        characters = plan.monthly_characters if plan else 0
+        written = billing.purchase(
+            account=event.account,
+            characters=characters,
+            paise=event.amount_paise,
+            reference=event.reference,
+            note=f"razorpay {event.event}",
+        )
+        if plan:
+            billing.set_plan(event.account, plan.name)
+        # `written is None` means this payment was already credited. That is a
+        # retry, which is normal, and the honest answer is success.
+        return {"ok": True, "credited": written is not None}
+
+    if event.reverses:
+        plan = PLANS.get(event.plan or "", None)
+        billing.refund(
+            account=event.account,
+            characters=plan.monthly_characters if plan else 0,
+            paise=event.amount_paise,
+            reference=event.reference,
+            note=f"razorpay {event.event}",
+        )
+        return {"ok": True, "reversed": True}
+
+    return {"ok": True, "ignored": event.event}
+
+
 @app.post("/v1/speech")
 async def v1_speech(request: Request) -> Response:
     """Text in, audio out.
@@ -1634,6 +1821,30 @@ async def v1_speech(request: Request) -> Response:
         )
         raise ApiError(429, "rate_limited", refusal)
     rate_limiter.record(f"key:{key.key_id}", billable)
+
+    # Checked before synthesis, never after. A generation holds the only machine
+    # for ~40 s per 1000 characters, and spending that on a request we are going
+    # to refuse is the worst of both outcomes -- the customer waits and is then
+    # told no, and the capacity is gone either way.
+    #
+    # Only blocking plans raise here. A paid plan runs into overage instead,
+    # because stopping a narration halfway to protect a few rupees costs more in
+    # support and churn than the overage is worth.
+    try:
+        billing.check_affordable(key.account, billable)
+    except InsufficientCredits as exc:
+        _meter_quietly(
+            Usage(account=key.account, key_id=key.key_id, characters=billable,
+                  status=REJECTED, voice=profile.profile_id, detail="no credits")
+        )
+        raise ApiError(
+            402,
+            "insufficient_credits",
+            f"{exc.needed} characters requested and {exc.balance} left this "
+            "period. Upgrade at /v1/plans, or wait for the period to reset.",
+            characters_remaining=exc.balance,
+            characters_requested=exc.needed,
+        ) from exc
 
     # Reuses the studio's path exactly -- same queue, same engine, same
     # normalisation. Two synthesis paths would drift, and the one that drifted

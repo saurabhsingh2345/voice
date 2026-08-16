@@ -146,6 +146,39 @@ open(<span class="s">"out.mp3"</span>, <span class="s">"wb"</span>).write(audio)
   <span class="s">"rejected"</span>: 2
 }</code></pre>
 
+  <h2>Plans and credits</h2>
+  <p><code>GET /v1/plans</code> needs no key — it is the pricing page as data, so
+    a client can show an upgrade prompt without hardcoding what we charge. Credits
+    are counted in <b>characters</b>, the unit this market quotes, and money is in
+    rupees.</p>
+<pre><code>{<span class="s">"currency"</span>: <span class="s">"INR"</span>,
+ <span class="s">"plans"</span>: [{<span class="s">"name"</span>: <span class="s">"creator"</span>, <span class="s">"inr_per_month"</span>: 499.0,
+            <span class="s">"characters_per_month"</span>: 500000, <span class="s">"blocks_when_empty"</span>: false}],
+ <span class="s">"overage_inr_per_10k_characters"</span>: 25.0,
+ <span class="s">"payments_enabled"</span>: false}</code></pre>
+
+  <p><code>GET /v1/balance</code> is what your key has left.</p>
+<pre><code>{<span class="s">"plan"</span>: <span class="s">"free"</span>, <span class="s">"characters_remaining"</span>: 4200,
+ <span class="s">"machine_seconds_remaining"</span>: 168.0, <span class="s">"overage_inr"</span>: 0.0}</code></pre>
+
+  <p><code>machine_seconds_remaining</code> is the honest unit and worth reading
+    before a batch job. We synthesize at roughly <b>40 seconds of machine time per
+    1,000 characters</b>, one generation at a time — so a million characters is
+    about eleven hours of a machine that has twenty-four, not an instant. Sizing a
+    job against this number beats discovering it from the queue.</p>
+
+  <p><b>Free accounts stop when the allowance is gone</b> (<code>402</code>). Paid
+    plans do not: they run into metered overage instead, because a narration that
+    halts halfway costs you more than the overage does.</p>
+
+  <div class="note">
+    <b>Payments are not live yet.</b> <code>payments_enabled</code> is
+    <code>false</code> and <code>POST /v1/checkout</code> answers <code>503</code>
+    until we finish provisioning Razorpay. The ledger, the allowances and the
+    <code>402</code> are all real and running today — only taking your money is
+    not. Ask us and we will grant credits directly.
+  </div>
+
   <h2>Errors</h2>
   <p>Every error is JSON with a stable <code>code</code>. Match on the code, not
     the message — messages get clearer over time, codes do not change.</p>
@@ -162,6 +195,9 @@ open(<span class="s">"out.mp3"</span>, <span class="s">"wb"</span>).write(audio)
     <tr><td>text_too_long</td><td>413</td><td>Over 3,000 characters. Split it into sections.</td></tr>
     <tr><td>rate_limited</td><td>429</td><td>Too many requests for this key. Wait and retry.</td></tr>
     <tr><td>unsupported_format</td><td>400</td><td>Carries the list we do support.</td></tr>
+    <tr><td>insufficient_credits</td><td>402</td><td>Free plan, allowance spent. Carries <code>characters_remaining</code> and <code>characters_requested</code>. Checked before we synthesize, so you are not charged and not made to wait.</td></tr>
+    <tr><td>payments_unavailable</td><td>503</td><td>Razorpay is not configured yet. Not your integration.</td></tr>
+    <tr><td>unknown_plan</td><td>400</td><td>Carries the list of plan names.</td></tr>
   </table>
 
   <h3>When the queue is full</h3>

@@ -387,3 +387,76 @@ def test_the_warning_is_absent_for_ordinary_hindi():
 
     assert devanagari_language_note("नमस्ते, आप कैसे हैं?") is None
     assert devanagari_language_note("सकाळी मी शाळेत लवकर पोहोचलो.") is not None
+
+
+# --- billing at the API surface -------------------------------------------
+
+
+def test_the_pricing_page_is_readable_without_a_key():
+    """Someone deciding whether to sign up should not need a key to see the
+    price. This is one of only two unauthenticated /v1 routes and public.py
+    names both."""
+    client = TestClient(srv.app)
+    response = client.get("/v1/plans")
+    assert response.status_code == 200
+
+    body = response.json()
+    assert body["currency"] == "INR"
+    assert {p["name"] for p in body["plans"]} == {"free", "creator", "developer"}
+    # Stated rather than implied, so nobody debugs an integration against a
+    # payment provider that was never configured.
+    assert body["payments_enabled"] is False
+
+
+def test_balance_requires_a_key():
+    client = TestClient(srv.app)
+    assert client.get("/v1/balance").status_code == 401
+
+
+def test_checkout_says_payments_are_unavailable_rather_than_failing_obscurely(monkeypatch):
+    """The boundary, seen from the API. Without credentials this is a 503 that
+    names what is missing -- not a connection error, and not a fake order."""
+    from voiceagent.web import razorpay as rz
+
+    for name in (rz.ENV_KEY_ID, rz.ENV_KEY_SECRET, rz.ENV_WEBHOOK_SECRET):
+        monkeypatch.delenv(name, raising=False)
+
+    _key, token = srv.key_store.create(account="billing-test", label="t")
+    client = TestClient(srv.app)
+    response = client.post(
+        "/v1/checkout",
+        json={"plan": "creator"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 503
+    assert response.json()["detail"]["error"]["code"] == "payments_unavailable"
+
+
+def test_the_webhook_refuses_when_payments_are_not_configured(monkeypatch):
+    """Refused rather than trusted. An unconfigured server must not have its
+    ledger written to by anyone who finds the URL."""
+    from voiceagent.web import razorpay as rz
+
+    for name in (rz.ENV_KEY_ID, rz.ENV_KEY_SECRET, rz.ENV_WEBHOOK_SECRET):
+        monkeypatch.delenv(name, raising=False)
+
+    client = TestClient(srv.app)
+    response = client.post("/v1/webhooks/razorpay", content=b'{"event":"payment.captured"}')
+    assert response.status_code == 503
+
+
+def test_an_unsigned_webhook_is_refused_even_when_configured(monkeypatch):
+    from voiceagent.web import razorpay as rz
+
+    monkeypatch.setenv(rz.ENV_KEY_ID, "rzp_test_x")
+    monkeypatch.setenv(rz.ENV_KEY_SECRET, "secret")
+    monkeypatch.setenv(rz.ENV_WEBHOOK_SECRET, "whsec")
+
+    client = TestClient(srv.app)
+    response = client.post(
+        "/v1/webhooks/razorpay",
+        content=b'{"event":"payment.captured"}',
+        headers={"x-razorpay-signature": "deadbeef"},
+    )
+    assert response.status_code == 401
+    assert response.json()["detail"]["error"]["code"] == "invalid_signature"

@@ -150,6 +150,42 @@ Chatterbox rather than IndicF5 (Phase 12 — licence tree, and it measured bette
   dependencies without touching `src/` is invisible to it, and that was half of
   what broke the server in the first place. Restart after `uv sync` regardless.
 
+## Billing — built, unpaid
+
+`web/billing.py` (accounts, plans, an append-only credit ledger) and
+`web/razorpay.py` (the payment boundary). 731 tests.
+
+Credits are **characters**, money is **paise** as integers. The ledger is
+append-only and the balance is its sum — a refund is an appended reverse, never
+an edit — so a billing dispute can be answered a month later. Payment references
+carry a unique index, which is what makes a retried Razorpay webhook a no-op
+rather than a second credit.
+
+| Plan | ₹/month | Characters | ₹/10k | Accounts one machine holds @30% |
+| --- | --- | --- | --- | --- |
+| free | 0 | 5,000 | — | blocks when spent |
+| creator | 499 | 500,000 | 9.98 | **38** |
+| developer | 1,999 | 2,500,000 | 8.00 | **7** |
+
+Both paid plans undercut Sarvam's ₹15/10k on the unit the market quotes;
+overage is ₹25/10k, deliberately between Sarvam's ₹15 and ₹30 rather than
+cheapest. Free blocks at zero; paid plans take overage instead, because a
+narration that stops halfway costs more than the overage does.
+
+**The number to keep in view: one Mac supports ~38 Creator accounts**, a hard
+revenue ceiling near ₹19,000/month per machine. That falls straight out of the
+cost work below and it is when the second machine has to exist.
+
+**What is not done: taking money.** `POST /v1/checkout` answers 503 and the
+webhook refuses to verify until `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` and
+`RAZORPAY_WEBHOOK_SECRET` exist. Everything else runs today — allowances, the
+402, the ledger. Signature verification is fully implemented and tested (both
+signatures: webhook HMAC over the **raw body** with the webhook secret, checkout
+HMAC over `order_id|payment_id` with the API secret — different secrets, easy
+and expensive to confuse). There is deliberately **no sandbox fake**: a stub
+returning a plausible order id would make the flow look finished and fail on
+first contact with the real API, holding someone's money.
+
 ## What a generation costs
 
 Measured 2026-08-16, `eval_out/cogs/FINDINGS.md`, module `voiceagent.eval.cogs`.
