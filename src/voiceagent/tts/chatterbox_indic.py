@@ -115,6 +115,29 @@ SAMPLE_RATE = 24_000
 
 #: The only Indic language this checkpoint speaks. Deliberately a set so the
 #: check reads the same if Resemble ever adds Bengali or Tamil.
+#:
+#: Phase A asked whether the Devanagari family comes free, since Marathi and
+#: Nepali share Hindi's script. Measured in `eval/devanagari.py`, and the answer
+#: is no. Two separate ceilings, and they are not the same kind:
+#:
+#:   * **Non-Devanagari Indic is impossible.** The checkpoint's 2,454-token vocab
+#:     contains 124 Devanagari tokens and *zero* for Bengali, Gujarati, Gurmukhi,
+#:     Oriya, Tamil, Telugu, Kannada and Malayalam. Tamil text is a run of
+#:     `[UNK]`. No prompting, routing or fine-tuning of ours moves this; it needs
+#:     a different model. Note the trap for anyone reading the vocab: a `[ta]`
+#:     language token *is* present, with no Tamil script behind it. A language
+#:     token is not support.
+#:   * **Devanagari-but-not-Hindi is reachable and still not shippable.** Marathi
+#:     and Nepali synthesize intelligibly (0.77 / 0.80 mean round-trip overlap,
+#:     nothing under the 0.50 alarm, RTF < 1.0). But `ळ` — the retroflex lateral
+#:     Marathi has and Hindi lacks — survived 0 of 4 seeds, and the model
+#:     substitutes Hindi words for Marathi ones (शाळेत -> शायद, every seed). A
+#:     voice that cannot say `ळ` is not a Marathi voice.
+#:
+#: So this stays `{"hi"}` on evidence, not on caution. Widening it is a fine-tune
+#: or a second engine, not a config change. `text.detect.devanagari_language_note`
+#: names the Marathi/Nepali case for callers, because `detect` maps all Devanagari
+#: to `hi` and these never reach the guard below.
 SUPPORTED_INDIC = frozenset({"hi"})
 
 #: Chatterbox conditions the decoder on at most 10 s of reference audio
