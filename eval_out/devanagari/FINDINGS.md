@@ -25,24 +25,24 @@ score the probe below it and the probe's number means nothing.
 
 | | Lang | Auto-detected | Overlap | RTF | Targets |
 | --- | --- | --- | --- | --- | --- |
-| c1 | hi | hi | 0.96 | 1.17 | control |
-| c2 | hi | hi | 0.78 | 1.04 | control |
-| c3 | hi | hi | 0.96 | 0.76 | control |
-| c4 | hi | hi | 0.89 | 0.88 | control |
-| c5 | hi | hi | 0.97 | 0.69 | control |
-| m1 | mr | hi | 0.67 | 0.87 | ळ, the retroflex lateral Marathi has and Hindi does not — the single clearest tell of a Hindi model reading Marathi |
-| m2 | mr | ko | 0.59 | 0.84 | dental affricates — च in पाच/चहा and ज in वाजता are [ts]/[dz] in Marathi, palatal in Hindi |
-| m3 | mr | hi | 0.90 | 0.76 | Marathi morphology (येते) with no Hindi cognate reading |
-| m4 | mr | hi | 0.82 | 0.74 | long form, two clauses — where accent drift shows up |
-| m5 | mr | gu | 0.86 | 0.68 | schwa deletion — Marathi and Hindi differ on final inherent vowels |
-| n1 | ne | gu | 0.70 | 0.83 | final schwa retention — Nepali pronounces inherent vowels Hindi drops |
-| n2 | ne | hi | 0.93 | 0.91 | तपाईं honorific with ऐं — Nepali-specific orthography |
-| n3 | ne | hi | 0.85 | 0.76 | एउटा, मैले — Nepali function words absent from Hindi |
-| n4 | ne | hi | 0.85 | 0.80 | long form, honorific verb morphology |
-| n5 | ne | hi | 0.68 | 0.75 | गर्न/लाग्छ — conjunct + Nepali verb endings |
+| c1 | hi | hi | 0.96 | 1.27 | control |
+| c2 | hi | hi | 0.78 | 1.05 | control |
+| c3 | hi | hi | 0.96 | 1.07 | control |
+| c4 | hi | hi | 0.89 | 0.85 | control |
+| c5 | hi | hi | 0.97 | 0.82 | control |
+| m1 | mr | hi | 0.67 | 0.77 | ळ, the retroflex lateral Marathi has and Hindi does not — the single clearest tell of a Hindi model reading Marathi |
+| m2 | mr | ko | 0.59 | 0.77 | dental affricates — च in पाच/चहा and ज in वाजता are [ts]/[dz] in Marathi, palatal in Hindi |
+| m3 | mr | hi | 0.90 | 0.73 | Marathi morphology (येते) with no Hindi cognate reading |
+| m4 | mr | hi | 0.82 | 0.79 | long form, two clauses — where accent drift shows up |
+| m5 | mr | gu | 0.86 | 0.77 | schwa deletion — Marathi and Hindi differ on final inherent vowels |
+| n1 | ne | gu | 0.00 | 0.77 | final schwa retention — Nepali pronounces inherent vowels Hindi drops |
+| n2 | ne | hi | 0.93 | 0.90 | तपाईं honorific with ऐं — Nepali-specific orthography |
+| n3 | ne | hi | 0.85 | 0.73 | एउटा, मैले — Nepali function words absent from Hindi |
+| n4 | ne | hi | 0.82 | 0.73 | long form, honorific verb morphology |
+| n5 | ne | hi | 0.68 | 0.74 | गर्न/लाग्छ — conjunct + Nepali verb endings |
 
 Marathi mean: **0.77**  
-Nepali mean: **0.80**  
+Nepali mean: **0.66**  
 Broken below: 0.50 (the one threshold round trip has earned)
 
 ## Verdict
@@ -53,17 +53,33 @@ Nothing here is broken: every sentence clears the 0.50 alarm, none needed a
 retry, and RTF stays under 1.0, so the model does read Devanagari it was never
 told about. That is the good news and it is genuinely surprising.
 
-It is also not enough, for one concrete reason. `ळ` — the retroflex lateral
-Marathi has and Hindi does not — **survived 0 of 4 seeds** (`SEEDS.md`). It is
-in the tokenizer; it does not come out of the model. Worse than dropping it,
-the model reaches for Hindi: `शाळेत` (*shaaLet*, "in school") comes back as
-`शायद` (*shaayad*, "maybe") on every seed — a real Hindi word substituted for
-a Marathi one. That is the signature of Hindi phonology and a Hindi lexicon
-reading Marathi text, which is exactly the failure mode a shared script hides.
+It is also not enough, and the reason has to be stated carefully because one
+half of the original evidence turned out to be confounded.
 
-A voice that cannot say `ळ` cannot be sold as Marathi. Nepali is less clear-cut
-— `र्` conjuncts survive 2 of 4 seeds, unreliable rather than absent — but
-unreliable is not shippable either.
+**The claim that holds: the model substitutes Hindi words for Marathi ones.**
+`शाळेत` (*shaaLet*, "in school") comes back as `शायद` (*shaayad*, "maybe") on
+**every seed**. That is a different, real Hindi word — not a spelling variant.
+A scorer that merely disliked a grapheme would write `शालेत` or `शारेत`; it
+would not invent a Hindi adverb. This is the signature of a Hindi lexicon
+reading Marathi text, it is independent of how the transcript is spelled, and
+it is what disqualifies the language.
+
+**The claim that does not hold on its own: `ळ` survived 0 of 4 seeds.**
+True as stated, and not attributable to the model. `ळ` has never appeared in
+*any* Whisper transcript this project has produced, across two unrelated TTS
+systems — Chatterbox here and Indic Parler-TTS in `eval_out/parler_spike/`,
+which is a model that genuinely speaks Marathi and whose `सकाळी` still came
+back as `सकार`. Whisper can represent `ळ` (it round-trips through the
+tokenizer) but spends two BPE tokens on it against one for `ल` and `र`, so the
+decoder is biased against emitting it. **The round trip cannot separate "the
+model did not say it" from "the scorer would not write it",** and the earlier
+reading of this number gave the model all of the blame.
+
+Settling it needs a native Marathi recording put through the same scorer. Until
+then quote the lexical substitution, not the grapheme count.
+
+Nepali is less clear-cut — `र्` conjuncts survive 2 of 4 seeds, unreliable
+rather than absent — but unreliable is not shippable either.
 
 Two methodological cautions this probe earned:
 

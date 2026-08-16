@@ -597,10 +597,38 @@ Nothing else on this plan matters if the answer is "Hindi." See §3.1.
      precedented here by `text/numbers.py`) and porting it from transformers 4.46
      to 5.x. That is a project, not an afternoon, and it is code we would own.
 
-   **Order of operations:** request access first. It is free, it unblocks
-   everything, and the vendoring decision should not be made until the voices can
-   be heard — a port is only worth paying for if the model is good, and a model
-   card is not evidence.
+   **Access granted 2026-08-16, and the model has been heard.** Generated in a
+   throwaway venv (never the project tree; `voice-doctor` still audits an
+   environment with no `soxr`) and scored with our own round trip:
+
+   | Tamil | Bengali | Telugu | Marathi | Hindi |
+   | --- | --- | --- | --- | --- |
+   | 0.82 | 0.76 | 0.83 | 0.58–0.90 | 0.69–0.74 |
+
+   **Tamil, Bengali and Telugu are the result.** Those scripts have *zero* tokens
+   in Chatterbox's vocab — unrepresentable, not merely unsupported — and Parler
+   reads them as well as it reads Hindi. The breadth is real and it is the thing
+   Phase A exists to buy.
+
+   Two hard caveats. **It is slower than the model we retired for being slow**:
+   RTF 3.9–18.9 against Chatterbox's 0.62, where IndicF5's 3.40 was itself a
+   reason to drop it. That is unoptimised fp32 on MPS with no quantization, so it
+   is a ceiling rather than a verdict — Chatterbox went 1.17 → 0.63 on 8-bit
+   alone — but nothing yet shows the gap closing. And **its Hindi is worse than
+   ours** (0.69–0.74 against our 0.91), so this sits *beside* Chatterbox as a
+   breadth engine, never replacing the Hindi path.
+
+   **The port is also much smaller than feared.** The decoder layers match
+   `MusicgenDecoderLayer` in the installed transformers name-for-name and
+   shape-for-shape; the text encoder is T5 and the codec is `DacModel`, both
+   native. The Parler delta is `embed_prompts` with a prefixed description
+   (`prompt_cross_attention: false`), fused LM heads, and the MusicGen codebook
+   machinery. Assembly of existing parts, not a modeling file ported across a
+   major version.
+
+   **The open question is now speed, not capability or licensing.** Decide by
+   measuring what an MLX/quantized port would cost, because at RTF 14 this
+   cannot serve the product at any price.
 3. Decide the split honestly: **cloning in Hindi and English; catalogue voices
    in everything else.** That is a shippable product and a truthful pricing
    page. Pretending otherwise is §1.1 waiting to happen.

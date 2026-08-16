@@ -102,11 +102,25 @@ def detect(text: str) -> Detection:
 #: positives. That precision is the whole reason this check is one character
 #: rather than a word list.
 #:
-#: It is here because we measured that we cannot say it. `eval/devanagari.py`
-#: re-generated "सकाळी मी शाळेत लवकर पोहोचलो." under four seeds and `ळ` came back
-#: 0 times out of 4 --- and on every seed the model reached for Hindi instead,
-#: rendering शाळेत (*shaaLet*, "in school") as शायद (*shaayad*, "maybe"). The
-#: grapheme is in the tokenizer; it is not in the model's output.
+#: It is used as a *detector* here, and the reason to refuse Marathi is the
+#: measurement in `eval/devanagari.py` --- but read that measurement carefully,
+#: because half of it is confounded and the honest half is the other one:
+#:
+#:   * **Load-bearing:** on every one of four seeds the model rendered शाळेत
+#:     (*shaaLet*, "in school") as शायद (*shaayad*, "maybe"). A different, real
+#:     Hindi word. A scorer that merely disliked a grapheme would write शालेत; it
+#:     would not invent a Hindi adverb. That is a Hindi lexicon reading Marathi,
+#:     it does not depend on spelling, and it is why this refuses.
+#:   * **Not load-bearing:** "`ळ` survived 0 of 4 seeds". True, and not the
+#:     model's fault alone --- `ळ` has never appeared in any Whisper transcript
+#:     this project has produced, including from Indic Parler-TTS, which does
+#:     speak Marathi. Whisper spends two BPE tokens on `ळ` against one for `ल`
+#:     and `र` and is biased against emitting it, so the round trip cannot tell
+#:     "not said" from "not written".
+#:
+#: None of that weakens `ळ` as a *detector*: it is absent from standard Hindi, so
+#: seeing it in input text identifies Marathi regardless of what any ASR does
+#: with the output.
 MARATHI_MARKER = "ळ"
 
 #: Function words that occur in Nepali and not in Hindi. Unlike `ळ` this is a

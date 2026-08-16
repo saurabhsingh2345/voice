@@ -29,7 +29,45 @@ At 937.8M parameters this is roughly Chatterbox's weight class, so the memory
 budget is not the obstacle — a bf16 or 8-bit checkpoint lands near the 1.33 GiB
 Chatterbox occupies today. Nothing about the size rules it out.
 
-## 2. Both official checkpoints are gated
+## 1b. The port is far smaller than section 4 assumed — UPDATE 2026-08-16
+
+Access was granted (§2 below is now history), and the config and weights say the
+vendoring job is mostly assembly of parts transformers already ships.
+
+    text_encoder    t5, 24 layers, d=1024      -> transformers T5, native
+    audio_encoder   dac                        -> transformers DacModel, native
+    decoder         parler_tts_decoder, 24 x   -> see below
+
+Dumping `model.safetensors` (840 tensors: 219 text_encoder, 223 audio_encoder,
+397 decoder, 1 `embed_prompts`) and comparing decoder layer 0 against
+`MusicgenDecoderLayer` built from the installed transformers 5.14.1 gives an
+**exact match, name for name and shape for shape**:
+
+    self_attn.{q,k,v,out}_proj.weight      self_attn_layer_norm.{weight,bias}
+    encoder_attn.{q,k,v,out}_proj.weight   encoder_attn_layer_norm.{weight,bias}
+    fc1.weight  fc2.weight                 final_layer_norm.{weight,bias}
+
+Which is not a coincidence — Parler-TTS is MusicGen's architecture with a
+different codec. MusicGen already uses T5 for text; Parler swaps EnCodec for DAC.
+So the Parler-specific delta is three things, not a modeling file:
+
+  * **`embed_prompts` and a prefixed description.** `prompt_cross_attention` is
+    `false` in this checkpoint, so the style description is embedded and
+    *prepended* to the decoder input rather than cross-attended. Cross-attention
+    carries the T5 encoding of the text to speak.
+  * **Fused LM heads.** `use_fused_lm_heads: true` — one `decoder.lm_heads.weight`
+    where MusicGen has a ModuleList of nine. A reshape, not a rewrite.
+  * **The usual MusicGen machinery around 9 codebooks** — learned positions
+    (`rope_embeddings: false`), the delay pattern, and DAC decoding.
+
+**What this does and does not establish.** It establishes that the weights fit
+native classes. It does **not** establish identical forward semantics: matching
+names and shapes cannot see a difference in the delay pattern, in how the
+prefixed prompt is masked, or in positional handling. Those are exactly the
+places a port goes subtly wrong and still produces plausible-sounding audio.
+Treat this as "much cheaper than feared", not as "done".
+
+## 2. Both official checkpoints are gated — RESOLVED 2026-08-16
 
     ai4bharat/indic-parler-tts              403 GatedRepoError
     ai4bharat/indic-parler-tts-pretrained   403 GatedRepoError
@@ -96,6 +134,54 @@ declare MIT, neither is published by Descript. The upstream `setup.py` installs
 `descript-audiotools` straight from a git URL with the comment "temporary fix as
 long as 0.7.4 is not published". A commercial product should not have a git-URL
 dependency of uncertain provenance in its tree.
+
+## 3b. It has been heard — UPDATE 2026-08-16
+
+Generated in a **throwaway venv**, never in the project tree. The licence rule
+governs what we install and ship; LGPL constrains distribution, not evaluation,
+and `voice-doctor` still audits an environment where `soxr` is absent. Deciding
+whether a model is worth adopting is not the same act as adopting it.
+
+Eight sentences, fp32 on MPS, scored with this project's own round-trip scorer
+pinned per language. Audio in `audio/`.
+
+| | Language | Overlap | RTF | Chatterbox can |
+| --- | --- | --- | --- | --- |
+| hi1 | Hindi | 0.69 | 3.90 | yes |
+| hi2 | Hindi | 0.74 | 12.02 | yes |
+| mr1 | Marathi | 0.58 | 18.41 | no (refused) |
+| mr2 | Marathi | 0.90 | 18.86 | no (refused) |
+| ne1 | Nepali | 0.55 | 12.03 | badly |
+| **ta1** | **Tamil** | **0.82** | 13.59 | **cannot encode** |
+| **bn1** | **Bengali** | **0.76** | 14.12 | **cannot encode** |
+| **te1** | **Telugu** | **0.83** | 16.80 | **cannot encode** |
+
+**The result that matters is the bottom three.** Tamil, Bengali and Telugu are
+scripts with *zero tokens* in Chatterbox's vocab — not badly supported,
+unrepresentable — and Indic Parler-TTS reads them at overlaps comparable to what
+it manages in Hindi. Nothing here is below the 0.50 alarm. The breadth is real.
+
+**Two things temper it, and neither is small.**
+
+*It is slower than the model we retired for being slow.* RTF 3.9–18.9 against
+Chatterbox's 0.62 and IndicF5's 3.40 — and IndicF5's 3.40 was one of the reasons
+it went. This is unoptimised fp32 PyTorch on MPS with no quantization and no MLX
+port, so it is a ceiling rather than a verdict: Chatterbox went 1.17 → 0.63 on
+8-bit alone. But 18x is a long way from 1.0 and there is no evidence yet that the
+gap closes.
+
+*Its Hindi is worse than ours.* 0.69 and 0.74 against the 0.91 the Chatterbox
+control scores on the same scorer. Read as "do not replace the Hindi path with
+it" — this is a breadth engine to sit *beside* Chatterbox, not instead of it,
+which is also what the two-engine routing in `tts/router.py` already assumes.
+
+**And it corrected one of our own findings.** Parler's Marathi `सकाळी` came back
+as `सकार` — no `ळ` — from a model that genuinely speaks Marathi. That is what
+exposed the confound now recorded in `eval_out/devanagari/FINDINGS.md`: `ळ` has
+never appeared in *any* Whisper transcript this project has produced, so "0 of 4
+seeds" was never evidence about Chatterbox alone. The Marathi refusal stands on
+the lexical substitution (शाळेत → शायद, a Hindi word, every seed), which this
+model does *not* do.
 
 ## 4. There is one clean path, and it is real work
 

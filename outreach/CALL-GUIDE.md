@@ -145,12 +145,19 @@ way the script check implies:
 
 > "Those two are a special case and I'd rather tell you than have you find out.
 > They're written in Hindi's script, so they don't get caught the way Tamil does.
-> Marathi we now **refuse outright** — the model cannot produce ळ at all, we
-> measured it across four generations and got it zero times, and it substitutes
-> Hindi words where the two languages collide. Rather than sell you audio that
-> is confidently not Marathi, the API returns a 400. Nepali we do serve, with a
-> warning header: it comes out understandable, but in Hindi phonology. It will
-> make a sound. It is not a Nepali voice and I won't sell it to you as one."
+> Marathi we now **refuse outright**, and the reason is specific: across four
+> generations the model read 'in school' — शाळेत — as शायद, which is a Hindi
+> word meaning 'maybe'. Every time. It isn't mispronouncing Marathi, it's
+> reaching for Hindi. Rather than sell you audio that is confidently not
+> Marathi, the API returns a 400. Nepali we do serve, with a warning header: it
+> comes out understandable, but in Hindi phonology. It will make a sound. It is
+> not a Nepali voice and I won't sell it to you as one."
+
+If they push on the phonetics — some will — do not claim the model cannot
+pronounce ळ. Our scorer has never written ळ for *any* system, including one that
+speaks Marathi properly, so we cannot tell whether it was not said or not
+transcribed. Say that. It costs nothing and it is the kind of answer that makes
+the rest of the numbers believable."
 
 That answer costs a deal we would have lost anyway on the first native listen,
 and it buys the credibility that makes the Hindi numbers believable.

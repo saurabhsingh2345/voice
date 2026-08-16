@@ -245,9 +245,13 @@ The spec sheet (old item 1) shipped; see `eval_out/SPECSHEET.md`.
   arrives as catalogue voices rather than cloned ones. Spiked 2026-08-16
   (`eval_out/parler_spike/FINDINGS.md`) and **not started**, for two reasons that
   both need a decision before code:
-  - **The weights are gated.** Two 403s on the official checkpoints; needs an
-    access request from the user's HF account. Third-party mirrors exist and are
-    refused — unattributed re-uploads, no declared licence.
+  - ~~The weights are gated.~~ **Access granted 2026-08-16 and the model has
+    been heard** (throwaway venv, never the project tree). It reads **Tamil 0.82,
+    Bengali 0.76, Telugu 0.83** — scripts Chatterbox cannot even encode — so the
+    breadth is real. But **RTF 3.9–18.9** unoptimised against Chatterbox's 0.62
+    (IndicF5 was retired at 3.40), and its **Hindi is worse than ours**
+    (0.69–0.74 vs 0.91). A breadth engine to sit beside Chatterbox, not replace
+    it, and the open question is now speed rather than capability.
   - **The `parler-tts` package would fail `voice-doctor`**, via
     `librosa` → `soxr` (LGPL-2.1-or-later) — one of the four packages that made
     `f5-tts` untenable. Nothing was installed; the tree was resolved in a
