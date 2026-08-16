@@ -651,8 +651,23 @@ The website is the company now. Concretely:
   one serving change that must land before charging anyone.
 - **Plan for one generation at a time.** The synthesis lock is a correctness
   requirement (shared mutable engines, `set_reference` on the shared instance),
-  so concurrency is 1 by design, not by tuning. Roughly half an hour of finished
-  audio per hour of wall clock.
+  so concurrency is 1 by design, not by tuning. ~~Roughly half an hour of
+  finished audio per hour of wall clock.~~ **Measured 2026-08-16 and that was
+  ~3x too pessimistic** — `eval_out/cogs/FINDINGS.md`. Sustained RTF is ~0.62,
+  so an hour of wall clock yields **~1.6 hours of audio**, and a day at an
+  unreachable 100% utilisation is ~2.0M characters or ~38 hours of audio. The
+  ceiling is higher than this plan assumed, which moves the free-tier maths.
+- **Charge per character; do not build a short-request surcharge.** Synthesis
+  time is ~40 s per 1000 characters and that slope is the one number four
+  independent sweeps agreed on (37.7–41.9). The per-*request* fixed cost did not
+  converge — intercepts from −0.03 s to 3.27 s, moving with whichever bucket
+  caught a load spike — so the batching penalty is bounded somewhere between
+  1.0x and 2.9x and is not known more precisely than that. It is small either
+  way next to the fact that electricity is **0.14–0.28%** of Sarvam's price.
+- **The constraint is capacity, not margin.** On owned hardware the per-character
+  cost is a fraction of a paisa, so "what is the margin" is not the question. The
+  budget is 86,400 machine-seconds a day and the free tier spends from it. Size
+  the free tier in seconds, and rate-limit on the same unit.
 - **Memory is the first ceiling, not compute.** Hindi needs ~3.0 GiB free on a
   machine that often has 4–7.
 - Instrument characters generated per account from the first request. It is the

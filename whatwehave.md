@@ -150,6 +150,28 @@ Chatterbox rather than IndicF5 (Phase 12 — licence tree, and it measured bette
   dependencies without touching `src/` is invisible to it, and that was half of
   what broke the server in the first place. Restart after `uv sync` regardless.
 
+## What a generation costs
+
+Measured 2026-08-16, `eval_out/cogs/FINDINGS.md`, module `voiceagent.eval.cogs`.
+
+| | |
+| --- | --- |
+| Marginal synthesis cost | **~40 s per 1000 characters** (four sweeps, 37.7–41.9) |
+| Sustained RTF | ~0.62 swept; **0.85 median in real traffic** |
+| Capacity, 100% utilisation | ~2.0M characters/day, ~38 h of audio |
+| Electricity per 10k chars | ~₹0.04 — **0.14–0.28% of Sarvam's price** |
+| Fixed cost per request | **unresolved**, −0.03 s to 3.27 s across sweeps |
+
+Two things follow. **Margin is not the question** — on hardware we own the
+per-character cost is a fraction of a paisa, and the real budget is 86,400
+machine-seconds a day, spent one generation at a time. **Charge per character
+and do not surcharge short requests**: the slope is solid, the intercept is not,
+and the batching penalty is bounded between 1.0x and 2.9x without being known.
+
+Use the *production* RTF (0.85, one request at 4.10) for capacity planning, not
+the swept 0.62. The sweep measures the machine; metering measures the service,
+and the gap between them is the real overhead.
+
 ## Future plan
 
 See `plan.md` for the strategy this now serves, and why it changed.
