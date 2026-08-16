@@ -145,6 +145,51 @@ Nothing below can be judged without it, and it is mostly measurement, not code.
 judgement, and a repeatable listening panel that produces a number in a day.
 Until both exist, treat every quality claim as unsupported.
 
+#### H0.1 is done, and the answer is no — 2026-08-16
+
+`eval_out/naturalness/FINDINGS.md`, module `voiceagent.eval.naturalness`. All 654
+rated clips, every metric scored on every axis, all-systems and working-band.
+
+| Metric | Best naturalness AUC (working band) |
+| --- | --- |
+| `squim_mos` | **0.579** |
+| `squim_sisdr` | 0.539 |
+| `overlap` (incumbent) | 0.578 |
+| `squim_pesq` | 0.515 |
+| `squim_stoi` | 0.504 |
+
+Against 0.500 for a coin flip. **Nothing here can judge Hindi naturalness.**
+
+The system-level result is worse than the clip-level one and is the real finding:
+
+| Metric | Spearman vs the raters' ranking, working band |
+| --- | --- |
+| `squim_sisdr` | **−0.829** |
+| `squim_pesq` | −0.714 |
+| `squim_stoi` | −0.600 |
+| `overlap` | −0.543 |
+| `squim_mos` | −0.429 |
+
+**Every one is negative.** These metrics do not merely fail to rank the six
+working systems — they rank them *backwards* against 1,900 native raters. A
+metric at −0.8 is worse than a coin, because acting on it moves the wrong way.
+
+Two things validate the pipeline rather than the metrics: `overlap` reproduces
+Phase 2's 0.625 on intelligibility exactly, and `overlap`'s working-band
+correlation is negative, which is the same inversion Phase 2 reported.
+
+**A limit of the data, found on the way.** The six axes are not independent —
+pairwise agreement is 76–93%, and `intelligibility` and `hallucinations` agree
+93% of the time. Raters were largely giving one global verdict across six boxes.
+So this dataset cannot cleanly isolate naturalness from intelligibility, and a
+predictor scoring well on `expressiveness` here may just be noticing breakage.
+That caps how good *any* answer from this route could have been.
+
+**Consequence, and it is the whole point of doing H0 first:** there is no
+shortcut. The listening panel in `eval/abtest.py` is the only instrument this
+project can have, and it has never been run. Everything in H1 and H2 is gated on
+recruiting listeners — not on writing code.
+
 ### H1 — Fix what the instrument says is broken (cheap, once you can see)
 
 Ordered by expected naturalness gain per unit of work, not by ease:
