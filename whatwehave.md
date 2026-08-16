@@ -214,7 +214,12 @@ and the gap between them is the real overhead.
 
 ## Future plan
 
-See `plan.md` for the strategy this now serves, and why it changed.
+See `plan.md` for the strategy this now serves, and why it changed, and
+**`plan-hindi.md`** for the current technical priority: make Hindi sound like a
+real person before adding any other language. Its first conclusion is that
+**naturalness has never been measured here**, so nothing else can be judged —
+and that the human harness to measure it (`eval/abtest.py`) has existed for
+months with zero ratings. The bottleneck is listeners, not code.
 
 **Next, in order**
 
