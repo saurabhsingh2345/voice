@@ -72,6 +72,38 @@ ARTIST_ROUTES: frozenset[tuple[str, str]] = frozenset(
 #: the artist's own recording session.
 ARTIST_PREFIXES: tuple[tuple[str, str], ...] = (("GET", "/api/dataset/"),)
 
+#: The blind listening test. Reachable publicly because it is *useless* if it is
+#: not: `eval_out/naturalness/FINDINGS.md` established that no automatic metric
+#: can judge Hindi naturalness, so a panel of native listeners is the only
+#: instrument this project can have — and a panel means people who are not
+#: sitting at this Mac. Until this list existed, sending someone the link
+#: returned 404 in public mode, which is why the harness has sat at zero ratings
+#: since it was built.
+#:
+#: Safe to expose, and each for a specific reason rather than by assumption:
+#:
+#:   * The audio is **already blinded** — items are served under opaque ids with
+#:     no system name, no transcript and no filename, because that is what makes
+#:     the test valid in the first place. There is nothing here a listener is not
+#:     meant to hear.
+#:   * `rate` is the only write, and it appends one small JSON file per listener.
+#:     It creates no models, touches no voice library, and consumes no synthesis
+#:     capacity — unlike `/api/speak` it cannot occupy the machine.
+#:   * `results` exposes aggregate counts, not raw audio or listener identity.
+#:
+#: What it does **not** protect against is a bad-faith rater spamming opinions.
+#: That is accepted: `abtest` already refuses a verdict below 20 ratings per
+#: system, ratings are keyed per listener so one person cannot be counted twice
+#: for the same item, and the population here is people we invited. If this is
+#: ever opened wider, it wants the invite gate rather than this list.
+LISTEN_ROUTES: frozenset[tuple[str, str]] = frozenset({("GET", "/listen")})
+
+#: Prefix-matched because these carry a benchmark id and an item id.
+LISTEN_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("GET", "/api/listen/"),
+    ("POST", "/api/listen/"),
+)
+
 #: The developer API. Reachable from anywhere and authenticated per request by
 #: an API key, which the endpoints check themselves --- this surface only has to
 #: let them through. Kept as a prefix so a new `/v1` route is available the
@@ -227,6 +259,13 @@ def is_artist_route(method: str, path: str) -> bool:
     return any(method == m and path.startswith(p) for m, p in ARTIST_PREFIXES)
 
 
+def is_listen_route(method: str, path: str) -> bool:
+    """The blind listening panel. See `LISTEN_ROUTES` for why this is open."""
+    if (method, path) in LISTEN_ROUTES:
+        return True
+    return any(method == m and path.startswith(p) for m, p in LISTEN_PREFIXES)
+
+
 class PublicSurface(BaseHTTPMiddleware):
     """Deny-by-default routing when `VOICEAGENT_PUBLIC` is set."""
 
@@ -265,6 +304,9 @@ class PublicSurface(BaseHTTPMiddleware):
                 #: 404 here too. A 403 would confirm the route exists and turn
                 #: guessing the code into a bounded problem.
                 return JSONResponse({"detail": "Not Found"}, status_code=404)
+            return await call_next(request)
+
+        if is_listen_route(method, path):
             return await call_next(request)
 
         if (method, path) not in PUBLIC_ROUTES:

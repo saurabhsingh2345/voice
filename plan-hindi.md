@@ -190,6 +190,35 @@ shortcut. The listening panel in `eval/abtest.py` is the only instrument this
 project can have, and it has never been run. Everything in H1 and H2 is gated on
 recruiting listeners — not on writing code.
 
+#### H0.2 — the panel is now sendable, and two tests are already built
+
+Two assembled benchmarks have been sitting on disk unrated. Nothing needed
+building; one thing needed fixing.
+
+**The blocker was not recruitment.** `/listen` and `/api/listen/*` were missing
+from the public allowlist, so in public mode a link sent to anyone who is not at
+this Mac returned 404. That is a large part of why a harness built in August has
+zero ratings. Fixed — see `LISTEN_ROUTES` in `web/public.py` for why opening it
+is safe (the audio is already blinded by construction, the only write is one
+small JSON per listener, and it cannot occupy the synthesis queue).
+
+To run it:
+
+    uv run voice-web                      # locally
+    VOICEAGENT_PUBLIC=1 uv run voice-web  # plus a tunnel, to send it out
+
+| Benchmark | Link | What it answers | Cost |
+| --- | --- | --- | --- |
+| `20260815-055835` | `/listen?b=20260815-055835` → **naturalness** | Which expressiveness setting sounds best — flat / mid / warm / high / shipped. This is **H1.2**, and the cheapest naturalness win available. | 30 items, ~8 min per listener. Needs ~4 listeners |
+| `20260813-154821` | `/listen?b=20260813-154821` → **identity** | The first *fooled rate* this project has ever had: how often synthetic is called real, against real recordings and a vocoded control | 96 items across 4 systems, 80+ ratings. Split across ~6 listeners |
+
+Start with the expressiveness sweep. It is a quarter of the work, it settles a
+setting that has been assumed since the beginning (`EXAGGERATION = 0.7`, never
+chosen by ear), and it produces a decision rather than a number.
+
+`abtest` refuses a verdict below 20 ratings per system, so partial data is
+reported as partial rather than as a result.
+
 ### H1 — Fix what the instrument says is broken (cheap, once you can see)
 
 Ordered by expected naturalness gain per unit of work, not by ease:

@@ -205,3 +205,52 @@ def test_the_v1_prefix_passes_the_surface_to_authenticate_itself():
 def test_v1_is_not_in_the_studio_allowlist():
     """It is a separate surface with separate auth, not an extra open route."""
     assert not any(path.startswith("/v1") for _m, path in PUBLIC_ROUTES)
+
+
+# --- the listening panel -------------------------------------------------
+#
+# Opened deliberately. `eval_out/naturalness/FINDINGS.md` established that no
+# automatic metric can judge Hindi naturalness, so a panel of native listeners is
+# the only instrument available -- and a panel means people who are not sitting
+# at this Mac. Until these routes were allowed, sending someone the link returned
+# 404 in public mode, which is a large part of why the harness has sat at zero
+# ratings since it was built.
+
+
+def test_the_listening_test_is_reachable_publicly():
+    from voiceagent.web.public import is_listen_route
+
+    assert is_listen_route("GET", "/listen")
+    assert is_listen_route("GET", "/api/listen/20260815-055835/session")
+    assert is_listen_route("GET", "/api/listen/20260815-055835/audio/abc123")
+    assert is_listen_route("POST", "/api/listen/20260815-055835/rate")
+    assert is_listen_route("GET", "/api/listen/20260815-055835/results")
+
+
+def test_opening_the_panel_did_not_open_anything_else():
+    """The rating endpoint is the only write this adds. Nothing about a listening
+    test should reach the voice library or the synthesis queue."""
+    from voiceagent.web.public import is_listen_route
+
+    assert not is_listen_route("POST", "/api/voices")
+    assert not is_listen_route("DELETE", "/api/data")
+    assert not is_listen_route("POST", "/api/speak")
+    assert not is_listen_route("GET", "/api/dataset/abc")
+    # Method matters: the prefix must not admit a verb it was not given.
+    assert not is_listen_route("DELETE", "/api/listen/x/rate")
+
+
+def test_a_listener_link_survives_the_public_middleware(monkeypatch):
+    """End to end through the deny-by-default middleware, because the unit test
+    above would still pass if the route were never consulted."""
+    from fastapi.testclient import TestClient
+
+    from voiceagent.web import public
+    from voiceagent.web import server as srv
+
+    monkeypatch.setenv(public.ENV_PUBLIC, "1")
+    client = TestClient(srv.app)
+
+    assert client.get("/listen").status_code == 200
+    # And the surface it was carved out of is still shut.
+    assert client.delete("/api/data").status_code == 404
