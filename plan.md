@@ -539,11 +539,30 @@ done and are referenced throughout this document.
 
 Nothing else on this plan matters if the answer is "Hindi." See §3.1.
 
-1. Test Chatterbox Multilingual on Marathi and Nepali. Same script, free
-   experiment, possibly two languages for nothing.
+1. ~~Test Chatterbox Multilingual on Marathi and Nepali.~~ **DONE 2026-08-16 —
+   negative.** `eval_out/devanagari/FINDINGS.md`. The experiment was free and the
+   languages are not. Two results, and the first one bounds everything else:
+
+   * **The vocab has 124 Devanagari tokens and zero for every other Indic
+     script.** Bengali, Gujarati, Gurmukhi, Oriya, Tamil, Telugu, Kannada,
+     Malayalam — all `[UNK]`. Non-Devanagari Indic is not reachable from this
+     checkpoint at any effort. (Trap for the next reader: a `[ta]` language token
+     exists with no Tamil script behind it. A language token is not support.)
+   * **Marathi and Nepali are reachable and still not shippable.** Both
+     synthesize intelligibly — 0.77 and 0.80 mean round-trip, nothing under the
+     0.50 alarm, RTF < 1.0 — but Marathi's `ळ` survived **0 of 4 seeds** and the
+     model substitutes Hindi words for Marathi ones (शाळेत → शायद, every seed).
+     Intelligible is not native. `SUPPORTED_INDIC` stays `{"hi"}`.
+
+   Consequence: **the Devanagari family was the only free option and it is
+   spent.** Every additional language now costs a model, not a config change.
 2. Spike **Indic Parler-TTS** (Apache-2.0, 21 languages) as the breadth engine,
    behind the same `<module>/base.py` seam every other engine sits behind. Route
-   on script, exactly as the TTS router already does.
+   on script, exactly as the TTS router already does. **This is now the whole of
+   Phase A rather than a fallback** — item 1 was the cheap path and it closed.
+   Note what that does to the exit test below: Parler is description-controlled
+   and cannot clone, so five languages via Parler means five *catalogue* voices,
+   which is item 3's split arriving as a constraint rather than a choice.
 3. Decide the split honestly: **cloning in Hindi and English; catalogue voices
    in everything else.** That is a shippable product and a truthful pricing
    page. Pretending otherwise is §1.1 waiting to happen.
@@ -552,6 +571,17 @@ Nothing else on this plan matters if the answer is "Hindi." See §3.1.
    pairwise comparison, which is what `arena_bt` fits.
 
 **Exit test:** five Indian languages, each measured, each with a named ceiling.
+Unchanged as a target, but item 1 establishes it cannot be met on the engine we
+have: Chatterbox tops out at one. Two of the five are already named and rejected,
+which is progress of the useful kind.
+
+**A measurement note this phase earned, and it generalises.** Aggregate
+round-trip is nearly blind to the failure that matters here. Marathi's 0.77 mean
+reads as a pass; the disqualifying result was one grapheme, found only by asking
+whether a specific character survived. And single generations in this band are
+noise — the same sentence scored 0.59 and 0.88 on different seeds, enough to
+invent a finding that does not exist. Any language assessed for the pricing page
+needs per-grapheme checks across seeds, not a mean.
 
 ### Phase B — The product surface
 

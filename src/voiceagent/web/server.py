@@ -25,7 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from voiceagent import version
-from voiceagent.text.detect import detect
+from voiceagent.text.detect import detect, devanagari_language_note
 from voiceagent.web.keys import ApiKey, KeyStore
 from voiceagent.web.metering import FAILED, OK, REJECTED, Meter, Usage, characters_of
 from voiceagent.web.public import (
@@ -86,6 +86,7 @@ app.add_middleware(
         "X-Realtime-Factor",
         "X-Audio-Format",
         "X-Language",
+        "X-Language-Warning",
         "X-Queued-Seconds",
         "X-Queue-Ahead",
         "X-Billable-Characters",
@@ -847,6 +848,14 @@ async def speak(
         )
     )
 
+    # Marathi and Nepali are Devanagari, so they are detected as Hindi and never
+    # reach `UnsupportedLanguage` — they synthesize, understandably, in Hindi
+    # phonology, with Marathi's `ळ` dropped entirely. Refusing them would be
+    # wrong (the audio is usable and some callers want it); saying nothing would
+    # be worse. A header lets a client surface it without changing the contract.
+    # See eval_out/devanagari/FINDINGS.md.
+    language_warning = devanagari_language_note(text)
+
     return Response(
         content=payload,
         media_type=media_type,
@@ -856,6 +865,7 @@ async def speak(
             "X-Realtime-Factor": f"{(elapsed_ms / 1000) / seconds:.2f}" if seconds else "0",
             "X-Audio-Format": ext,
             "X-Language": detection.language,
+            **({"X-Language-Warning": language_warning} if language_warning else {}),
             # What the caller waited behind, and what it will be charged. Both
             # in headers so a client can show a queue notice and a running
             # total without a second request.

@@ -81,7 +81,18 @@ Chatterbox rather than IndicF5 (Phase 12 — licence tree, and it measured bette
 **Known and accepted**
 
 - Hindi is **Hindi only**. Chatterbox Multilingual speaks 1 Indic language where
-  IndicF5 spoke 11; other Indic scripts raise `UnsupportedLanguage`.
+  IndicF5 spoke 11; other Indic scripts raise `UnsupportedLanguage`. Measured
+  2026-08-16 (`eval_out/devanagari/FINDINGS.md`), and there are two different
+  ceilings behind that one sentence:
+  - **Other scripts are impossible, not merely unsupported.** The vocab holds 124
+    Devanagari tokens and zero Bengali/Gujarati/Gurmukhi/Oriya/Tamil/Telugu/
+    Kannada/Malayalam. A `[ta]` language token exists with no Tamil script behind
+    it, which will mislead anyone who reads the vocab as a language list.
+  - **Marathi and Nepali are neither refused nor supported.** They share Hindi's
+    script, so `detect` calls them `hi` and they synthesize — intelligibly (0.77 /
+    0.80 round-trip) and in Hindi phonology. Marathi's `ळ` came back 0 of 4 seeds
+    and the model swaps in Hindi words (शाळेत → शायद). The API now returns an
+    `X-Language-Warning` header rather than guessing silently. Do not sell either.
 - The live loop hears Hindi only with `--language hi` or `auto`; the default is
   English. Moonshine is English-only and does not *fail* on Hindi, it invents
   English — a real Hindi recording came back as "I have given a documentary for
@@ -166,7 +177,10 @@ The spec sheet (old item 1) shipped; see `eval_out/SPECSHEET.md`.
 - Have a native Hindi speaker review the 227 loanword spellings. A wrong entry
   silently overrides the fallback and is never revisited.
 - More Indic languages. No longer free via script-detect → engine-route: it needs
-  a checkpoint that speaks them.
+  a checkpoint that speaks them. The shared-script shortcut was tested on
+  2026-08-16 and closed — see Limitations. Indic Parler-TTS (Apache-2.0, 21
+  languages) is now the only route to breadth, and it cannot clone, so breadth
+  arrives as catalogue voices rather than cloned ones.
 
 ## Working principles that keep paying off
 
@@ -175,6 +189,14 @@ The spec sheet (old item 1) shipped; see `eval_out/SPECSHEET.md`.
   ranking. Every clip under 0.5 overlap was rejected by human raters too (11 of
   11), and above that it stops discriminating — a 0.88 is not better than a
   0.85. Never quote it against a competitor.
+- **Ask whether a specific grapheme survived, not what the mean was.** Marathi
+  averaged 0.77 — a pass by any aggregate reading — while failing on the one
+  letter that makes it Marathi. The mean was the least informative number
+  available; the disqualifying evidence came from grepping a transcript for `ळ`.
+- **Sample before believing a bad score.** One generation scored 0.59 and read as
+  a phonological failure; the same sentence scored 0.88 on two other seeds and
+  the failure did not exist. Chatterbox samples, so a per-sentence number carries
+  ~±0.15 of seed noise. Only a defect that reproduces on every seed is a defect.
 - **Calibrate a metric before trusting its ordering.** Round trip looked like a
   quality measure for months and reads r=0.948 across seven systems, which is
   one broken outlier dragging a line through a cluster. The check that exposed

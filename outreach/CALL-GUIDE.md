@@ -139,6 +139,21 @@ disparage.
 > your answer today. If Hindi and English cover the volume, the agent layer is
 > the part nobody else has."
 
+If they ask specifically about Marathi or Nepali — and a Maharashtra or Nepal
+deployment will — volunteer the whole answer, because this is the one place the
+error does not fire:
+
+> "Those two are a special case and I'd rather tell you than have you find out.
+> They're written in Hindi's script, so they don't hit the error — they
+> synthesize, and they're understandable. But the model is reading them with
+> Hindi phonology. Marathi's ळ doesn't come out at all; we measured it across
+> four generations and got it zero times, and the model substitutes Hindi words
+> where the two languages collide. The API returns a warning header. It will make
+> a sound. It is not a Marathi voice and I won't sell it to you as one."
+
+That answer costs a deal we would have lost anyway on the first native listen,
+and it buys the credibility that makes the Hindi numbers believable.
+
 ### 5. "Who else is using this?"
 
 > "Nobody yet — you'd be first, and I'd rather say that than imply otherwise.

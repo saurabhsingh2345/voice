@@ -363,3 +363,27 @@ def test_an_unknown_format_is_refused_before_synthesis():
         "/api/speak", data={"text": "नमस्ते।", "profile_id": "x", "format": "aiff"}
     )
     assert r.status_code == 400
+
+
+# --- the Marathi/Nepali warning -------------------------------------------
+
+
+def test_the_language_warning_header_is_readable_by_a_browser():
+    """A header the studio cannot read is a header that does not exist. CORS
+    hides everything not named in `expose_headers`, and the whole point of
+    warning about Marathi is that a *caller* sees it."""
+    exposed = {
+        h.lower()
+        for mw in srv.app.user_middleware
+        for h in (mw.kwargs.get("expose_headers") or [])
+    }
+    assert "x-language-warning" in exposed
+
+
+def test_the_warning_is_absent_for_ordinary_hindi():
+    """Silence is the common case and it has to stay silent, or the header
+    becomes noise the studio learns to ignore."""
+    from voiceagent.text.detect import devanagari_language_note
+
+    assert devanagari_language_note("नमस्ते, आप कैसे हैं?") is None
+    assert devanagari_language_note("सकाळी मी शाळेत लवकर पोहोचलो.") is not None

@@ -120,6 +120,9 @@ open(<span class="s">"out.mp3"</span>, <span class="s">"wb"</span>).write(audio)
     <tr><td>X-Billable-Characters</td><td>What this request counted as. Measured on your text, before our normalisation.</td></tr>
     <tr><td>X-Queued-Seconds</td><td>How long it waited behind other requests.</td></tr>
     <tr><td>X-Realtime-Factor</td><td>Synthesis time ÷ audio length. Under 1.0 means faster than real time.</td></tr>
+    <tr><td>X-Language-Warning</td><td>Present only when your text is a language we render but do not
+      support — today, Marathi and Nepali, which share Hindi's script and so are synthesized rather
+      than refused. Absent on every ordinary request. Worth logging.</td></tr>
   </table>
 
   <h2>List voices</h2>
@@ -169,7 +172,10 @@ open(<span class="s">"out.mp3"</span>, <span class="s">"wb"</span>).write(audio)
   <h2>What this does not do yet</h2>
   <ul>
     <li><b>Streaming.</b> You get the whole file when it is finished. A four-minute request takes minutes.</li>
-    <li><b>Indic languages beyond Hindi.</b> Other scripts return an error rather than being spoken badly.</li>
+    <li><b>Indic languages beyond Hindi.</b> Other <em>scripts</em> return an error rather than
+      being spoken badly. Marathi and Nepali share Hindi's script, so they synthesize instead:
+      understandable, but read with Hindi phonology — Marathi's <span lang="mr">ळ</span> is not
+      produced at all. The response carries a warning. Do not ship either as a supported language.</li>
     <li><b>Voice cloning over the API.</b> Enrolment is done by us, with a recorded consent statement from the speaker.</li>
     <li><b>An SLA.</b> One machine, one person. Do not put it on a critical path.</li>
   </ul>

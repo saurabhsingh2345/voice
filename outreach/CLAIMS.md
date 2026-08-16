@@ -154,7 +154,8 @@ discovered by the buyer costs more than all of them disclosed together.
 
 | Limitation | How to say it |
 | --- | --- |
-| **Hindi only among Indic languages** | "Hindi and English today. Chatterbox Multilingual speaks 23 languages including Hindi; other Indic scripts raise `UnsupportedLanguage` rather than guessing. More Indic languages need a checkpoint that speaks them — it is roadmap, not configuration." |
+| **Hindi only among Indic languages** | "Hindi and English today. Chatterbox Multilingual speaks 23 languages including Hindi; other Indic *scripts* raise `UnsupportedLanguage` rather than guessing. More Indic languages need a checkpoint that speaks them — it is roadmap, not configuration." |
+| **Marathi and Nepali are not refused, and are not supported** | Say this before a buyer discovers it. They share Hindi's script, so they do not hit the error above — they synthesize, intelligibly (0.77 / 0.80 round-trip, nothing under the 0.50 alarm) and with Hindi phonology. Marathi's `ळ` is **not produced at all** — 0 of 4 seeds — and the model substitutes Hindi words for Marathi ones. "It will make a sound; it is not a Marathi voice and we will not sell it as one." The API now warns rather than guessing silently. Evidence: `eval_out/devanagari/FINDINGS.md`. |
 | **Weights are not in the bundle** | "The app is 1.3 GB; the models are ~7.6 GB and download once. It runs offline *after* provisioning, not out of the box. For an air-gapped site we pre-stage the weights — ask early, it changes the install." |
 | **The `.app` is unsigned** | "Not yet signed or notarised, so Gatekeeper will refuse it on your Mac until we do. In progress. Do not hand a prospect an `xattr` workaround as though it were a shipping answer." |
 | **Naturalness unmeasured** | §2 above. |
