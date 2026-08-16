@@ -296,7 +296,8 @@ order they should be tried:
 1. **Chatterbox Multilingual already speaks 23 languages** — but only Hindi
    among Indic. Check what its tokenizer actually does with Marathi and Nepali,
    which share Devanagari; that is a free experiment and might yield two more.
-2. **Indic Parler-TTS** — Apache-2.0, **21 languages**, Hindi at 84.79% native
+2. **Indic Parler-TTS** — Apache-2.0, **18 languages** (the model card's own
+   metadata; this document said 21 until 2026-08-16), Hindi at 84.79% native
    satisfaction (§10). Description-based control, *no cloning*. This is the most
    likely answer for breadth, and it is licence-clean. The cost is that cloned
    voices would be Hindi/English-only for a while.
@@ -556,13 +557,50 @@ Nothing else on this plan matters if the answer is "Hindi." See §3.1.
 
    Consequence: **the Devanagari family was the only free option and it is
    spent.** Every additional language now costs a model, not a config change.
-2. Spike **Indic Parler-TTS** (Apache-2.0, 21 languages) as the breadth engine,
+2. Spike **Indic Parler-TTS** (Apache-2.0, 18 languages) as the breadth engine,
    behind the same `<module>/base.py` seam every other engine sits behind. Route
    on script, exactly as the TTS router already does. **This is now the whole of
    Phase A rather than a fallback** — item 1 was the cheap path and it closed.
    Note what that does to the exit test below: Parler is description-controlled
    and cannot clone, so five languages via Parler means five *catalogue* voices,
    which is item 3's split arriving as a constraint rather than a choice.
+
+   **Spiked 2026-08-16 — `eval_out/parler_spike/FINDINGS.md`. Not started; the
+   model is right and two things are in the way.** Nothing was installed: the
+   dependency tree was resolved in a throwaway venv, which is the only reason
+   `voice-doctor` still exits 0.
+
+   * **The model fits the need.** Apache-2.0, 937.8M params, 18 languages
+     covering Marathi and Nepali (which Chatterbox reads and cannot speak) plus
+     Tamil, Telugu, Bengali, Gujarati, Kannada, Malayalam, Odia and Punjabi
+     (which it cannot even encode). Weight class is Chatterbox's, so memory is
+     not the obstacle.
+   * **Both official checkpoints are gated** — two 403s. Needs an access request
+     from the user's Hugging Face account, and it blocks every hands-on step.
+     Do not route around it via the third-party mirrors: they are unattributed
+     re-uploads with no declared licence, refused for the same reason
+     `models.py` refuses community requants. Downstream consequence nobody has
+     costed: a gated repo cannot be fetched by an end user's machine, so the
+     desktop bundle would need the weights pre-staged or re-hosted.
+   * **The `parler-tts` package fails our own licence rule.** It pulls
+     `descript-audiotools-unofficial` → `librosa` → **`soxr`, LGPL-2.1-or-later**,
+     checked against `COPYLEFT_PATTERN` and confirmed to trip it. `soxr` is one
+     of the four packages `pyproject.toml` names as the reason `f5-tts` had to
+     go. This is §1.1's lesson repeating almost exactly: the model card is
+     Apache-2.0 and the dependency tree is not. It also pins
+     `transformers==4.46.1` against our 5.14.1, and its own wheel declares no
+     licence at all — which the audit would pass *silently*, on absent metadata.
+   * **There is one clean path.** `transformers.DacModel` ships in the version we
+     already run, so the entire `descript-*` → `librosa` → `soxr` subtree — the
+     whole reason the package fails — is replaceable by a class we already have.
+     What is left is vendoring the Apache-2.0 modeling code (permitted, and
+     precedented here by `text/numbers.py`) and porting it from transformers 4.46
+     to 5.x. That is a project, not an afternoon, and it is code we would own.
+
+   **Order of operations:** request access first. It is free, it unblocks
+   everything, and the vendoring decision should not be made until the voices can
+   be heard — a port is only worth paying for if the model is good, and a model
+   card is not evidence.
 3. Decide the split honestly: **cloning in Hindi and English; catalogue voices
    in everything else.** That is a shippable product and a truthful pricing
    page. Pretending otherwise is §1.1 waiting to happen.
@@ -681,7 +719,7 @@ generous free tier on someone else's GPU bill is how this dies quietly.
 | GST threshold ₹20L services | Confirmed: ₹20L services (₹10L special-category states); ₹40L goods | high |
 | Pvt Ltd incorporation ₹6–15k | ₹7,000–25,000 all-in; SPICe+ filing free up to ₹15L capital; DIN/PAN/TAN included | medium |
 | IndicF5 licence | Weights **MIT**. The problem was never the weights — it is the `f5-tts` dependency tree. Ranks **last** of 7 on SpeechArenaBench | HF card + arXiv 2604.21481 |
-| Indic Parler-TTS | **Apache-2.0**, 21 languages, Hindi 84.79% native-speaker satisfaction, description-based control only, no cloning | HF card, high |
+| Indic Parler-TTS | **Apache-2.0**, **18** languages (not 21 — corrected 2026-08-16 against the card's metadata), Hindi 84.79% native-speaker satisfaction, description-based control only, no cloning. **Both official checkpoints are gated**, and the `parler-tts` package fails our licence rule via `soxr` | HF card + `eval_out/parler_spike/FINDINGS.md`, high |
 | "Vocos MIT / BigVGAN check NVIDIA terms" | Moot — Chatterbox Multilingual (MIT) removes the whole f5-tts subtree | verified locally |
 | Sarvam AI position | Open-sourced Sarvam-30B/105B LLMs (Apache) Mar 2026; **Bulbul/Saarika stay API-only**; Bulbul v4 shown 30 Jul 2026; Sarvam Edge (14 Feb 2026) is speech-only, 74M params, ~294 MB, no agent layer, no announced availability | vendor + secondary |
 | "Krutrim, Cartesia, Camb.ai, Smallest.ai" | Krutrim best Hindi prosody/pronunciation/clarity in pilot; Cartesia Sonic 3 tied 2nd overall; **Murf AI** ($10M Series A, Falcon 55 ms, MultiNative mid-sentence Hinglish) and **Dubverse** are the Indian dubbing incumbents | mixed |

@@ -178,9 +178,20 @@ The spec sheet (old item 1) shipped; see `eval_out/SPECSHEET.md`.
   silently overrides the fallback and is never revisited.
 - More Indic languages. No longer free via script-detect → engine-route: it needs
   a checkpoint that speaks them. The shared-script shortcut was tested on
-  2026-08-16 and closed — see Limitations. Indic Parler-TTS (Apache-2.0, 21
-  languages) is now the only route to breadth, and it cannot clone, so breadth
-  arrives as catalogue voices rather than cloned ones.
+  2026-08-16 and closed — see Limitations. Indic Parler-TTS (Apache-2.0, **18**
+  languages) is the only route to breadth, and it cannot clone, so breadth
+  arrives as catalogue voices rather than cloned ones. Spiked 2026-08-16
+  (`eval_out/parler_spike/FINDINGS.md`) and **not started**, for two reasons that
+  both need a decision before code:
+  - **The weights are gated.** Two 403s on the official checkpoints; needs an
+    access request from the user's HF account. Third-party mirrors exist and are
+    refused — unattributed re-uploads, no declared licence.
+  - **The `parler-tts` package would fail `voice-doctor`**, via
+    `librosa` → `soxr` (LGPL-2.1-or-later) — one of the four packages that made
+    `f5-tts` untenable. Nothing was installed; the tree was resolved in a
+    throwaway venv. The clean path is to vendor the Apache-2.0 modeling code and
+    decode with `transformers.DacModel`, which we already have, but that is a
+    port across a transformers major version rather than an afternoon.
 
 ## Working principles that keep paying off
 
